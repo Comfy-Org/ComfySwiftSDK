@@ -711,6 +711,22 @@ internal actor Transport {
                 return .network(underlying: urlError)
             }
         }
+        // Map POSIX socket-drop codes to `.network` (transient) so the
+        // polling fallback retries on resume instead of surfacing a false
+        // failure. These codes are delivered as `NSError` in the POSIX
+        // domain when the OS kills the underlying socket — most commonly
+        // when the app is backgrounded mid-job and the connection is torn
+        // down (ENOTCONN, ECONNRESET, ECONNABORTED), or when the network
+        // interface disappears (ENETDOWN, ENETUNREACH, EHOSTUNREACH), or
+        // the request times out at the socket level (ETIMEDOUT, EPIPE).
+        // None of these indicate a job-level failure; they indicate that
+        // the *transport* blipped and the job should be re-polled.
+        let ns = error as NSError
+        if ns.domain == NSPOSIXErrorDomain,
+           [ENOTCONN, ECONNRESET, ECONNABORTED, ENETDOWN, ENETUNREACH, ETIMEDOUT, EPIPE, EHOSTUNREACH]
+               .contains(Int32(ns.code)) {
+            return .network(underlying: error)
+        }
         return .unknown(underlying: error)
     }
 
