@@ -81,7 +81,7 @@ public final class ComfyCloudClient: Sendable {
     /// `Authorization: Bearer <token>`. The credential is held privately
     /// and never logged, returned, or exposed in any form.
     public init(credential: ComfyCredential) {
-        let session = URLSession(configuration: .default)
+        let session = URLSession(configuration: ComfySDKInfo.sessionConfiguration())
         let transport = Transport(
             session: session,
             baseURL: Self.baseURL,
@@ -304,7 +304,7 @@ public final class ComfyCloudClient: Sendable {
         _ code: String,
         codeVerifier: String
     ) async throws -> OAuthTokenResponse {
-        let exchanger = OAuthExchanger(session: URLSession(configuration: .default))
+        let exchanger = OAuthExchanger(session: URLSession(configuration: ComfySDKInfo.sessionConfiguration()))
         return try await exchanger.exchange(code: code, codeVerifier: codeVerifier)
     }
 
