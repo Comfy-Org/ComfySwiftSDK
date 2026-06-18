@@ -364,14 +364,15 @@ struct ReattachCoordinatorTests {
         // coordinator. This keeps the opaque-JobHandle invariant intact
         // while making `JobHandle.init` usable only from inside the SDK.
         let testFileURL = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFileURL
+        // ComfySwiftSDK is a standalone package now: the package root is three
+        // levels up from this file (Tests/ComfySwiftSDKTests/<this>), not five
+        // (the old Comfy-iOS/Packages/ComfySwiftSDK/… nested layout).
+        let packageRoot = testFileURL
             .deletingLastPathComponent() // ComfySwiftSDKTests/
             .deletingLastPathComponent() // Tests/
-            .deletingLastPathComponent() // ComfySwiftSDK/
-            .deletingLastPathComponent() // Packages/
-            .deletingLastPathComponent() // Comfy-iOS/
-        let clientPath = repoRoot.appendingPathComponent(
-            "Packages/ComfySwiftSDK/Sources/ComfySwiftSDK/Public/ComfyCloudClient.swift"
+            .deletingLastPathComponent() // ComfySwiftSDK/ (package root)
+        let clientPath = packageRoot.appendingPathComponent(
+            "Sources/ComfySwiftSDK/Public/ComfyCloudClient.swift"
         )
         let source = try String(contentsOf: clientPath, encoding: .utf8)
 
