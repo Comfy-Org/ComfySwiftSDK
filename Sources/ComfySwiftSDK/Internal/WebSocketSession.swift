@@ -455,21 +455,33 @@ internal actor WebSocketSession {
                     do {
                         var files: [WorkflowOutput.OutputFile] = []
                         for ref in bufferedImageRefs {
-                            let (data, mime) = try await transport.downloadView(
-                                filename: ref.filename,
-                                subfolder: ref.subfolder,
-                                type: ref.type
-                            )
+                            // BE-1606: wrap each output download in the
+                            // transient-retry helper so a stale-connection
+                            // blip on the just-resumed socket (ECONNRESET
+                            // et al.) does not surface as a permanent
+                            // `.failed` — the download retries up to
+                            // `PollingFallback.outputFetchMaxAttempts`
+                            // times before giving up. Non-transient errors
+                            // propagate immediately, unchanged.
+                            let (data, mime) = try await PollingFallback.withTransientRetry {
+                                try await transport.downloadView(
+                                    filename: ref.filename,
+                                    subfolder: ref.subfolder,
+                                    type: ref.type
+                                )
+                            }
                             files.append(.image(data, mimeType: mime))
                         }
                         for ref in bufferedVideoRefs {
                             let ext = (ref.filename as NSString).pathExtension
-                            let url = try await transport.downloadViewToTempFile(
-                                filename: ref.filename,
-                                subfolder: ref.subfolder,
-                                type: ref.type,
-                                suggestedExtension: ext.isEmpty ? "mp4" : ext
-                            )
+                            let url = try await PollingFallback.withTransientRetry {
+                                try await transport.downloadViewToTempFile(
+                                    filename: ref.filename,
+                                    subfolder: ref.subfolder,
+                                    type: ref.type,
+                                    suggestedExtension: ext.isEmpty ? "mp4" : ext
+                                )
+                            }
                             files.append(.video(url: url))
                         }
                         let duration = Date().timeIntervalSince(startTime)
@@ -482,6 +494,8 @@ internal actor WebSocketSession {
                         continuation.finish()
                         return
                     } catch {
+                        // After exhausting retries (or on a non-transient
+                        // error), surface the failure as before.
                         continuation.yield(.failed(Transport.translate(error)))
                         continuation.finish()
                         return

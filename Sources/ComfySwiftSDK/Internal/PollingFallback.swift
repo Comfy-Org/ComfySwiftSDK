@@ -367,6 +367,11 @@ internal actor PollingFallback {
 
     /// Build a `WorkflowOutput` from a terminal `success` DTO by
     /// downloading every referenced output via Transport.
+    ///
+    /// Each individual download is wrapped in `withTransientRetry` so a
+    /// stale-connection blip on the just-resumed socket does not surface
+    /// as a permanent failure — the output fetch retries (up to
+    /// `outputFetchMaxAttempts` times) before giving up.
     static func buildOutput(
         from dto: JobStatusDTO,
         transport: Transport,
@@ -393,21 +398,25 @@ internal actor PollingFallback {
 
         var files: [WorkflowOutput.OutputFile] = []
         for ref in imageRefs {
-            let (data, mime) = try await transport.downloadView(
-                filename: ref.filename,
-                subfolder: ref.subfolder,
-                type: ref.type
-            )
+            let (data, mime) = try await withTransientRetry {
+                try await transport.downloadView(
+                    filename: ref.filename,
+                    subfolder: ref.subfolder,
+                    type: ref.type
+                )
+            }
             files.append(.image(data, mimeType: mime))
         }
         for ref in videoRefs {
             let ext = (ref.filename as NSString).pathExtension
-            let url = try await transport.downloadViewToTempFile(
-                filename: ref.filename,
-                subfolder: ref.subfolder,
-                type: ref.type,
-                suggestedExtension: ext.isEmpty ? "mp4" : ext
-            )
+            let url = try await withTransientRetry {
+                try await transport.downloadViewToTempFile(
+                    filename: ref.filename,
+                    subfolder: ref.subfolder,
+                    type: ref.type,
+                    suggestedExtension: ext.isEmpty ? "mp4" : ext
+                )
+            }
             files.append(.video(url: url))
         }
 
@@ -417,6 +426,45 @@ internal actor PollingFallback {
             durationSeconds: duration,
             jobId: jobId
         )
+    }
+
+    /// Maximum number of attempts for a transient-error retry on output
+    /// fetch. One initial attempt + up to two retries = three total.
+    static let outputFetchMaxAttempts: Int = 3
+
+    /// Retry `body` up to `outputFetchMaxAttempts` times when it throws
+    /// a transient `ComfyError`. Non-transient errors and non-`ComfyError`
+    /// throws propagate immediately on the first occurrence. On the last
+    /// attempt the transient error also propagates so the caller can
+    /// surface a `.failed` event — we never loop forever.
+    ///
+    /// The retry is intentionally small (3 attempts, no real sleep) to
+    /// match the "stale-connection blip" scenario: the first call on a
+    /// just-resumed socket often fails with `ECONNRESET`; the second
+    /// typically succeeds once the OS has re-established the underlying
+    /// TCP session. If the network is genuinely down the polling loop
+    /// above already handles prolonged outages with exponential backoff.
+    static func withTransientRetry<T>(
+        body: () async throws -> T
+    ) async throws -> T {
+        var lastError: Error?
+        for attempt in 0 ..< outputFetchMaxAttempts {
+            do {
+                return try await body()
+            } catch let error as ComfyError where isTransient(error) {
+                lastError = error
+                // Short pause only after the first failure — gives the
+                // OS a moment to re-establish the socket before retry 2.
+                if attempt == 0 {
+                    try? await Task.sleep(nanoseconds: 250_000_000) // 250 ms
+                }
+                continue
+            } catch {
+                // Non-transient ComfyError or unknown error: surface immediately.
+                throw error
+            }
+        }
+        throw lastError!
     }
 
     /// Coarse phase label derived from a Comfy Cloud node id. Mirrors
