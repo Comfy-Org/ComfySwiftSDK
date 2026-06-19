@@ -30,8 +30,9 @@
 //      (Story 4.4 Task 4) avoid re-emitting a phase the UI
 //      already saw.
 //
-//  No logging (SDK observability is deferred — architecture.md
-//  §Cross-Cutting Concerns). Every thrown error is a `ComfyError`.
+//  Logging: credential-free error classification only via `SDKLog`
+//  (see SDKLog.swift). ComfyError case name + jobId at give-up and
+//  output-assembly failure paths. NEVER credential / body / raw error.
 //
 //  Story 4.4.
 //
@@ -178,12 +179,15 @@ internal actor PollingFallback {
                     }
                     continue
                 } else {
+                    SDKLog.pollingGaveUp(error: error, jobId: jobId)
                     continuation.yield(.failed(error))
                     continuation.finish()
                     return
                 }
             } catch {
-                continuation.yield(.failed(.unknown(underlying: error)))
+                let wrapped = ComfyError.unknown(underlying: error)
+                SDKLog.pollingGaveUp(error: wrapped, jobId: jobId)
+                continuation.yield(.failed(wrapped))
                 continuation.finish()
                 return
             }
@@ -239,6 +243,7 @@ internal actor PollingFallback {
                         continue
                     }
                     // Exhausted retries — surface the empty-output failure.
+                    SDKLog.pollingEmptyOutputExhausted(jobId: jobId)
                     continuation.yield(.failed(.unknown(underlying: EmptyOutputError())))
                     continuation.finish()
                     return
@@ -254,11 +259,14 @@ internal actor PollingFallback {
                     continuation.finish()
                     return
                 } catch let error as ComfyError {
+                    SDKLog.pollingOutputAssemblyFailed(error: error, jobId: jobId)
                     continuation.yield(.failed(error))
                     continuation.finish()
                     return
                 } catch {
-                    continuation.yield(.failed(.unknown(underlying: error)))
+                    let wrapped = ComfyError.unknown(underlying: error)
+                    SDKLog.pollingOutputAssemblyFailed(error: wrapped, jobId: jobId)
+                    continuation.yield(.failed(wrapped))
                     continuation.finish()
                     return
                 }
