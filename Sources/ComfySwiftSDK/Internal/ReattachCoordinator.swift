@@ -85,6 +85,35 @@ internal actor ReattachCoordinator {
         }
     }
 
+    /// Catch-up status fetch with a small bounded retry on *transient*
+    /// errors. The first request on a connection the OS just
+    /// resumed from suspension often fails — a `.network` -1011
+    /// bad-server-response, `.offline`, or `.timeout` — and a retry
+    /// typically succeeds once the underlying session is re-established.
+    /// Non-transient errors propagate on the first occurrence; the
+    /// transient error on the final attempt also propagates, so the
+    /// caller still terminates rather than looping forever.
+    private static func fetchJobStatusWithTransientRetry(
+        transport: Transport,
+        id: String,
+        clock: any Clock<Duration>
+    ) async throws -> JobStatusDTO {
+        let maxAttempts = 3
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                return try await transport.fetchJobStatus(id: id)
+            } catch let error as ComfyError
+                where PollingFallback.isTransient(error) && attempt < maxAttempts {
+                // Transient blip on a just-resumed connection — back off
+                // briefly and retry. The error is intentionally swallowed
+                // here; the final-attempt transient propagates instead.
+                try await clock.sleep(for: .milliseconds(attempt == 1 ? 250 : 750))
+            }
+        }
+    }
+
     // MARK: - Reattach body
 
     private static func runReattach(
@@ -96,12 +125,19 @@ internal actor ReattachCoordinator {
     ) async {
         let startTime = Date()
 
-        // Step 1 — catch-up fetch. A single HTTP GET. Every failure
-        // here terminates the stream; there is nothing to resume from
-        // if we cannot read current state.
+        // Step 1 — catch-up fetch. A single HTTP GET, retried a few
+        // times on a *transient* failure before giving up. The first
+        // request on a socket the OS just resumed from suspension often
+        // fails (a `.network` -1011 bad-server-response, `.offline`, or
+        // `.timeout`); a retry usually succeeds once the connection is
+        // re-established. Without this, a momentary blip on resume
+        // falsely terminates a job that is still recoverable.
+        // Non-transient failures still terminate immediately.
         let dto: JobStatusDTO
         do {
-            dto = try await transport.fetchJobStatus(id: handle.id)
+            dto = try await fetchJobStatusWithTransientRetry(
+                transport: transport, id: handle.id, clock: clock
+            )
         } catch let error as ComfyError {
             continuation.yield(.failed(error))
             continuation.finish()
