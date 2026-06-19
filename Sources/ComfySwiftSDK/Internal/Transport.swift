@@ -19,14 +19,15 @@
 //  `translate(_:)` helper is the canonical mapper, shared with
 //  `WebSocketSession`.
 //
-//  Logging in this file in Story 1.5: NONE. SDK observability is
-//  deferred (see Story 1.5 Dev Notes "SDK observability is deferred").
-//  No `print()`, no `os.Logger`, no `Log.*`. The NFR-S2 enforcement test
-//  passes trivially because there is no place a key or token fragment
-//  could leak from. Story 8.2 preserves this: neither the API key nor
-//  the OAuth access token is ever logged or interpolated into an error.
-//  Story 8.5 preserves it again: the refresh token and the rotated
-//  token pair pass through `performRefresh` and never touch any log.
+//  Logging in this file: credential-free error classification only via
+//  `SDKLog` (see SDKLog.swift). `translate(_:)` logs the matched POSIX
+//  code on socket-drop paths and the error type name on the `.unknown`
+//  fallback. NEVER the API key, OAuth token, Authorization header value,
+//  request body, response body, or any raw Error/URLRequest object.
+//  Story 8.2 preserves this: neither the API key nor the OAuth access
+//  token is ever logged or interpolated into an error. Story 8.5
+//  preserves it again: the refresh token and the rotated token pair pass
+//  through `performRefresh` and never touch any log.
 //
 //  Story 8.5 adds SDK-owned silent refresh for the `.oauthRefreshable`
 //  credential mode: proactive pre-request refresh when the stored
@@ -725,8 +726,13 @@ internal actor Transport {
         if ns.domain == NSPOSIXErrorDomain,
            [ENOTCONN, ECONNRESET, ECONNABORTED, ENETDOWN, ENETUNREACH, ETIMEDOUT, EPIPE, EHOSTUNREACH]
                .contains(Int32(ns.code)) {
+            // Log the matched POSIX code — classification only, no URL/body/credential.
+            SDKLog.transportPOSIXTranslated(code: Int32(ns.code))
             return .network(underlying: error)
         }
+        // Log the unknown fallback — type name only, never the error's localizedDescription
+        // or any associated value that might carry header/credential material.
+        SDKLog.transportUnknownFallback(errorType: String(describing: type(of: error)))
         return .unknown(underlying: error)
     }
 
