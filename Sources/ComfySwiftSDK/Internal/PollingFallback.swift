@@ -40,7 +40,7 @@
 import Foundation
 
 /// Polling-based event stream for an in-flight Comfy Cloud job.
-/// Hits `GET /api/prompt/{prompt_id}` via `Transport` at ~1s cadence
+/// Hits `GET /api/jobs/{job_id}` via `Transport` at ~1s cadence
 /// and translates the response into the same `JobEvent` values the
 /// WebSocket transport yields.
 internal actor PollingFallback {
@@ -160,7 +160,7 @@ internal actor PollingFallback {
         let successWithoutOutputsMaxRetries: Int = 8
 
         while !Task.isCancelled {
-            let dto: JobStatusDTO
+            let dto: JobDetailResponse
             do {
                 dto = try await transport.fetchJobStatus(id: jobId)
                 backoffIndex = 0 // success resets the backoff ladder
@@ -193,18 +193,22 @@ internal actor PollingFallback {
             }
 
             // Translate DTO → JobEvent(s).
+            //
+            // Status values per `GET /api/jobs/{job_id}` (ingest OpenAPI
+            // `JobDetailResponse`): `pending`, `in_progress`, `completed`,
+            // `failed`, `cancelled`.
             switch dto.status.lowercased() {
-            case "queued", "pending":
+            case "pending":
                 if !didEmitQueued {
                     continuation.yield(.queued)
                     didEmitQueued = true
                     lastPhase = "queued"
                 }
 
-            case "running", "executing", "in_progress":
+            case "in_progress":
                 // A4 fix: reset the eventually-consistent success retry
-                // budget if the server reverts from "success" to "running"
-                // (observed during high-load status oscillation).
+                // budget if the server reverts from "completed" to
+                // "in_progress" (observed during high-load status oscillation).
                 successWithoutOutputsRetries = 0
                 if !didEmitQueued {
                     continuation.yield(.queued)
@@ -220,13 +224,13 @@ internal actor PollingFallback {
                     lastFraction = fraction
                 }
 
-            case "success", "completed", "succeeded":
+            case "completed":
                 if !didEmitFinalizing {
                     continuation.yield(.finalizing)
                     didEmitFinalizing = true
                 }
-                // cursor-reviews Fix C: eventually-consistent success.
-                // If the server returned "success" but the outputs map
+                // cursor-reviews Fix C: eventually-consistent completion.
+                // If the server returned "completed" but the outputs map
                 // hasn't been populated yet, keep polling instead of
                 // failing. Capped so we don't loop forever on a truly
                 // empty job.
@@ -271,13 +275,13 @@ internal actor PollingFallback {
                     return
                 }
 
-            case "error", "failed":
+            case "failed":
                 let phase = derivePhase(from: dto)
                 continuation.yield(.failed(.jobFailed(phase: phase)))
                 continuation.finish()
                 return
 
-            case "cancelled", "canceled":
+            case "cancelled":
                 continuation.yield(.cancelled)
                 continuation.finish()
                 return
@@ -331,39 +335,43 @@ internal actor PollingFallback {
     /// Derive a short transport-agnostic phase label from the polled
     /// DTO. Never a raw Comfy Cloud node name — that would leak the
     /// workflow graph into the UI.
-    static func derivePhase(from dto: JobStatusDTO) -> String {
-        if let node = dto.node, !node.isEmpty {
-            return phaseLabel(forNode: node)
-        }
+    ///
+    /// The HTTP status endpoint (`GET /api/jobs/{job_id}`) does not
+    /// return per-node progress or phase hints — those are WebSocket-
+    /// only. The label is derived from `status` alone.
+    static func derivePhase(from dto: JobDetailResponse) -> String {
         switch dto.status.lowercased() {
-        case "queued", "pending":
+        case "pending":
             return "queued"
-        case "success", "completed", "succeeded":
+        case "completed":
             return "saving"
+        case "failed":
+            // Surface the node type from execution_error if available.
+            if let nodeType = dto.executionError?.nodeType, !nodeType.isEmpty {
+                return phaseLabel(forNode: nodeType)
+            }
+            return "executing"
         default:
             return "executing"
         }
     }
 
-    /// Compute a clamped `[0, 1]` fraction from the DTO's progress
-    /// bucket. Mirrors the `WebSocketSession`'s fraction-clamping
-    /// contract (defense in depth against malformed server frames).
-    static func deriveFraction(from dto: JobStatusDTO) -> Double {
-        guard let value = dto.progress?.value,
-              let max = dto.progress?.max,
-              max > 0 else {
-            return 0.0
-        }
-        let raw = value / max
-        guard raw.isFinite else { return 0.0 }
-        return min(1.0, Swift.max(0.0, raw))
+    /// Compute a clamped `[0, 1]` fraction from the DTO.
+    ///
+    /// The HTTP status endpoint (`GET /api/jobs/{job_id}`) does not
+    /// carry a progress bucket — it returns status and outputs only.
+    /// This helper always returns `0.0` for HTTP-polled DTOs so the
+    /// caller emits a neutral fraction; the WebSocket stream owns
+    /// fine-grained progress reporting.
+    static func deriveFraction(from dto: JobDetailResponse) -> Double {
+        return 0.0
     }
 
     /// Whether the DTO carries at least one image / gif / video ref
-    /// in its `outputs` map. Used by the poll loop's success branch to
-    /// distinguish "job done, assets ready" from "server flipped status
-    /// a beat before assets materialized" (cursor-reviews Fix C).
-    static func hasOutputRefs(in dto: JobStatusDTO) -> Bool {
+    /// in its `outputs` map. Used by the poll loop's `completed` branch
+    /// to distinguish "job done, assets ready" from "server flipped
+    /// status a beat before assets materialized" (cursor-reviews Fix C).
+    static func hasOutputRefs(in dto: JobDetailResponse) -> Bool {
         guard let outputs = dto.outputs else { return false }
         for (_, payload) in outputs {
             if let images = payload.images, !images.isEmpty { return true }
@@ -373,7 +381,7 @@ internal actor PollingFallback {
         return false
     }
 
-    /// Build a `WorkflowOutput` from a terminal `success` DTO by
+    /// Build a `WorkflowOutput` from a terminal `completed` DTO by
     /// downloading every referenced output via Transport.
     ///
     /// Each individual download is wrapped in `withTransientRetry` so a
@@ -381,7 +389,7 @@ internal actor PollingFallback {
     /// as a permanent failure — the output fetch retries (up to
     /// `outputFetchMaxAttempts` times) before giving up.
     static func buildOutput(
-        from dto: JobStatusDTO,
+        from dto: JobDetailResponse,
         transport: Transport,
         startTime: Date,
         jobId: String

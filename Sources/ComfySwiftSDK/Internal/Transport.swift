@@ -451,9 +451,9 @@ internal actor Transport {
         try Self.checkStatus(response)
     }
 
-    // MARK: - Job status polling (Story 4.4)
+    // MARK: - Job status polling (Story 4.4 / BE-1615)
 
-    /// Read the current status of a job via `GET /api/prompt/{prompt_id}`.
+    /// Read the current status of a job via `GET /api/jobs/{job_id}`.
     /// Used by `PollingFallback` when the WebSocket transport is
     /// unavailable, and by `ReattachCoordinator` for a one-shot
     /// catch-up snapshot before resuming the event stream.
@@ -461,12 +461,12 @@ internal actor Transport {
     /// Throws the same `ComfyError` cases as any other HTTP call;
     /// `.offline`/`.timeout` drive exponential backoff in the
     /// polling loop.
-    internal func fetchJobStatus(id: String) async throws -> JobStatusDTO {
+    internal func fetchJobStatus(id: String) async throws -> JobDetailResponse {
         try await withAuthRetry { try await performFetchJobStatus(id: id) }
     }
 
-    private func performFetchJobStatus(id: String) async throws -> JobStatusDTO {
-        let url = baseURL.appendingPathComponent("api/prompt/\(id)")
+    private func performFetchJobStatus(id: String) async throws -> JobDetailResponse {
+        let url = baseURL.appendingPathComponent("api/jobs/\(id)")
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         try await applyAuth(to: &urlRequest)
@@ -482,7 +482,7 @@ internal actor Transport {
         try Self.checkStatus(response)
 
         do {
-            return try JSONDecoder().decode(JobStatusDTO.self, from: data)
+            return try JSONDecoder().decode(JobDetailResponse.self, from: data)
         } catch {
             throw ComfyError.unknown(underlying: error)
         }

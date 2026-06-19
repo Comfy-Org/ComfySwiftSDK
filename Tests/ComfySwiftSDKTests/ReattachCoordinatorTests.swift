@@ -26,7 +26,7 @@ struct ReattachCoordinatorTests {
 
     // MARK: - Terminal-state reattach
 
-    @Test("reattach to an already-successful job emits .complete and closes")
+    @Test("reattach to an already-completed job emits .complete and closes")
     func terminalSuccess() async throws {
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
         TestURLProtocol.install { request in
@@ -41,7 +41,7 @@ struct ReattachCoordinatorTests {
                 return (resp, imagePNG)
             }
             let body = #"""
-            {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
+            {"id":"job-1","status":"completed","create_time":1,"update_time":2,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
             """#
             let resp = HTTPURLResponse(
                 url: request.url!,
@@ -81,7 +81,7 @@ struct ReattachCoordinatorTests {
     @Test("reattach to an already-failed job emits .failed(.jobFailed) and closes")
     func terminalError() async throws {
         TestURLProtocol.install { request in
-            let body = #"{"status": "error", "node": "KSampler"}"#
+            let body = #"{"id":"job-1","status":"failed","create_time":1,"update_time":2,"execution_error":{"node_id":"3","node_type":"KSampler","exception_message":"oom","exception_type":"RuntimeError","traceback":[]}}"#
             let resp = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -120,7 +120,7 @@ struct ReattachCoordinatorTests {
     @Test("reattach to an already-cancelled job emits .cancelled and closes")
     func terminalCancelled() async throws {
         TestURLProtocol.install { request in
-            let body = #"{"status": "cancelled"}"#
+            let body = #"{"id":"job-1","status":"cancelled","create_time":1,"update_time":2}"#
             let resp = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -163,13 +163,13 @@ struct ReattachCoordinatorTests {
         // Subsequent (polling): running @ 8/10 on KSampler → success
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
         let catchUp = #"""
-        {"status": "running", "progress": {"value": 2, "max": 10}, "node": "KSampler"}
+        {"id":"job-1","status":"in_progress","create_time":1,"update_time":2}
         """#
         let moreProgress = #"""
-        {"status": "running", "progress": {"value": 8, "max": 10}, "node": "KSampler"}
+        {"id":"job-1","status":"in_progress","create_time":1,"update_time":3}
         """#
         let done = #"""
-        {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
+        {"id":"job-1","status":"completed","create_time":1,"update_time":4,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
         """#
 
         TestURLProtocol.install { request in
@@ -219,14 +219,17 @@ struct ReattachCoordinatorTests {
             if events.count > 20 { break }
         }
 
-        // Expect synthetic .queued + .progress, plus at least one
-        // polling-sourced .progress (the 8/10 update), plus
+        // Expect synthetic .queued + .progress (from catch-up), plus
         // .finalizing + .complete.
+        // The HTTP polling endpoint does not carry per-node progress
+        // fraction, so all `in_progress` responses produce the same
+        // phase/fraction; de-dup suppresses the polling-sourced repeat
+        // and we see exactly one .progress total.
         let queuedCount = events.filter { if case .queued = $0 { return true }; return false }.count
         #expect(queuedCount == 1, "Expected exactly one .queued (no duplicate across catch-up → polling), got \(queuedCount)")
 
         let progressCount = events.filter { if case .progress = $0 { return true }; return false }.count
-        #expect(progressCount >= 2, "Expected >=2 .progress (catch-up + polling update), got \(progressCount)")
+        #expect(progressCount >= 1, "Expected at least one .progress (catch-up), got \(progressCount)")
 
         #expect(events.contains(where: { if case .finalizing = $0 { return true }; return false }))
         #expect(events.contains(where: { if case .complete = $0 { return true }; return false }))
@@ -235,12 +238,12 @@ struct ReattachCoordinatorTests {
     @Test("reattach to a queued job emits synthetic .queued then continues polling")
     func activeQueuedContinues() async throws {
         let counter = RequestCounter()
-        let queuedBody = #"{"status": "queued"}"#
+        let queuedBody = #"{"id":"job-1","status":"pending","create_time":1,"update_time":1}"#
         let runningBody = #"""
-        {"status": "running", "progress": {"value": 5, "max": 10}, "node": "KSampler"}
+        {"id":"job-1","status":"in_progress","create_time":1,"update_time":2}
         """#
         let done = #"""
-        {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
+        {"id":"job-1","status":"completed","create_time":1,"update_time":3,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
         """#
 
         TestURLProtocol.install { request in
