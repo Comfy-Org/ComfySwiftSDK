@@ -3,8 +3,7 @@
 //  ComfySwiftSDK
 //
 //  Wire-format DTOs for the Comfy Cloud WebSocket frame stream and the
-//  `GET /api/job/{prompt_id}/status` polling endpoint per the Story 1.5
-//  Task 0 research note.
+//  `GET /api/jobs/{job_id}` polling endpoint.
 //
 //  Comfy Cloud's WebSocket sends JSON text frames in the shape
 //  `{"type": "<discriminator>", "data": {...}}` where the discriminators
@@ -127,68 +126,100 @@ struct OutputFileRef: Decodable {
     let type: String
 }
 
-/// Wire-format DTO for the polling endpoint
-/// `GET /api/prompt/{prompt_id}`. Used by `PollingFallback` (Story 4.4)
+/// Structured execution error from `GET /api/jobs/{job_id}`.
+/// Present on terminal `status == "failed"` responses when the server
+/// has structured diagnostics. Maps to the `ExecutionError` schema
+/// in the ingest OpenAPI spec.
+///
+/// Named `JobDetailExecutionError` to avoid shadowing the
+/// `JobExecutionError: Error` sentinel used by `WebSocketSession`
+/// (which has a different purpose — wrapping WS frame errors for
+/// the `ComfyError.unknown` path). This type is a pure Decodable DTO;
+/// it is never thrown.
+///
+/// Required fields per spec: `node_id`, `node_type`, `exception_message`,
+/// `exception_type`, `traceback`, `current_inputs`, `current_outputs`.
+/// All are decoded permissively (optional in Swift) so a partial
+/// server response does not crash decoding.
+struct JobDetailExecutionError: Decodable {
+    let nodeId: String?
+    let nodeType: String?
+    let exceptionMessage: String?
+    let exceptionType: String?
+    let traceback: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case nodeId = "node_id"
+        case nodeType = "node_type"
+        case exceptionMessage = "exception_message"
+        case exceptionType = "exception_type"
+        case traceback
+    }
+}
+
+/// Wire-format DTO for the job-status polling endpoint
+/// `GET /api/jobs/{job_id}`. Used by `PollingFallback` (Story 4.4)
 /// to read the current job status when the WebSocket transport is
 /// unavailable, and by `ReattachCoordinator` (Story 4.4) to fetch a
 /// one-shot catch-up snapshot before resuming the event stream.
 ///
-/// Comfy Cloud's status endpoint response shape is not fully
-/// documented; observed fields cover: a discriminator `status`
-/// string (`queued`/`running`/`success`/`error`/`cancelled`), an
-/// optional `progress` bucket (`value`/`max`), and an optional
-/// `outputs` mapping from node id to `NodeOutputPayload`. Every
-/// field except `status` is optional so the DTO decodes permissively
-/// — new fields the server starts emitting should not crash the SDK.
+/// Maps the `JobDetailResponse` schema from the ingest OpenAPI spec.
+/// Required fields: `id` (uuid), `status` (enum), `create_time`
+/// (int64 ms), `update_time` (int64 ms). Optional fields include
+/// `outputs` (present only in terminal states), `execution_error`
+/// (present on `failed` with structured diagnostics), and
+/// `preview_output`/`outputs_count` (ignored by the SDK).
+///
+/// Status enum values: `pending`, `in_progress`, `completed`,
+/// `failed`, `cancelled`. These differ from the legacy
+/// `queued`/`running`/`success`/`error`/`cancelled` values on the
+/// tombstoned `/api/prompt/{id}` endpoint.
+///
+/// Every field except `status` is decoded permissively so the DTO
+/// handles partial or forward-compatible server responses without
+/// crashing.
 ///
 /// Story 4.4.
-struct JobStatusDTO: Decodable {
-    /// Discriminator: `"queued"`, `"running"`, `"success"`, `"error"`,
-    /// or `"cancelled"`. The SDK treats any unknown value as
-    /// `"running"` (conservative — keep polling).
+struct JobDetailResponse: Decodable {
+    /// Unique job identifier (UUID).
+    let id: String?
+
+    /// User-friendly job status. Canonical values per the ingest
+    /// OpenAPI spec: `"pending"`, `"in_progress"`, `"completed"`,
+    /// `"failed"`, `"cancelled"`. The SDK treats any unknown value
+    /// as active (conservative — keep polling).
     let status: String
 
-    /// Optional progress bucket. Present while `status == "running"`.
-    let progress: ProgressBody?
-
-    /// Optional phase hint. Comfy Cloud may emit the currently-
-    /// executing node id in one of several fields; try all of them.
-    let node: String?
-
-    /// Optional outputs bucket keyed by node id. Present on terminal
-    /// `status == "success"`.
+    /// Full outputs object from ComfyUI (only for terminal states).
+    /// Keyed by node id; values follow the `NodeOutputPayload` shape.
     let outputs: [String: NodeOutputPayload]?
 
-    /// Optional error diagnostics. Present on terminal `status == "error"`.
-    let error: ErrorBody?
+    /// Structured execution error. Present on `status == "failed"`
+    /// when the server has ComfyUI node-level diagnostics.
+    let executionError: JobDetailExecutionError?
 
-    struct ProgressBody: Decodable {
-        let value: Double?
-        let max: Double?
-    }
+    /// Job creation timestamp (Unix ms). Decoded for completeness;
+    /// not currently used by the SDK's event stream.
+    let createTime: Int64?
 
-    struct ErrorBody: Decodable {
-        let message: String?
-        let nodeType: String?
-        let exceptionType: String?
-        let exceptionMessage: String?
-
-        enum CodingKeys: String, CodingKey {
-            case message
-            case nodeType = "node_type"
-            case exceptionType = "exception_type"
-            case exceptionMessage = "exception_message"
-        }
-    }
+    /// Last-update timestamp (Unix ms). Decoded for completeness;
+    /// not currently used by the SDK's event stream.
+    let updateTime: Int64?
 
     enum CodingKeys: String, CodingKey {
+        case id
         case status
-        case progress
-        case node
         case outputs
-        case error
+        case executionError = "execution_error"
+        case createTime = "create_time"
+        case updateTime = "update_time"
     }
 }
+
+/// Backward-compatibility typealias. Internal call sites that were
+/// written against the old `JobStatusDTO` name compile unchanged;
+/// new code should use `JobDetailResponse` directly.
+typealias JobStatusDTO = JobDetailResponse
 
 /// Type-erased decodable wrapper. Used for the WebSocket frame
 /// envelope's `data` field, which has heterogeneous shape per

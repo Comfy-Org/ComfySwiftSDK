@@ -5,11 +5,13 @@
 //  Story 4.4 AC8 — unit tests for `PollingFallback`.
 //
 //  Covers:
-//    - Wire-format decoding (`JobStatusDTO` shapes for queued / running / success / error / cancelled)
+//    - Wire-format decoding (`JobDetailResponse` shapes for pending /
+//      in_progress / completed / failed / cancelled)
 //    - `JobEvent` mapping parity with `WebSocketSession`
 //    - De-duplication (no duplicate `.queued`, no repeat `.progress`)
 //    - Exponential backoff on transport errors (ladder: 2s → 4s → 8s cap)
 //    - Terminal-state output download via `Transport`
+//    - Regression: request URL is `/api/jobs/{id}` (not `/api/prompt/{id}`)
 //
 //  Uses `TestURLProtocol` to stub HTTP responses — no real network.
 //
@@ -23,33 +25,34 @@ import Foundation
 @Suite("PollingFallback", .serialized)
 struct PollingFallbackTests {
 
-    // MARK: - JobStatusDTO decoding
+    // MARK: - JobDetailResponse decoding
 
-    @Test("decodes queued status")
-    func decodesQueuedStatus() throws {
-        let json = #"{"status": "queued"}"#.data(using: .utf8)!
-        let dto = try JSONDecoder().decode(JobStatusDTO.self, from: json)
-        #expect(dto.status == "queued")
-        #expect(dto.progress == nil)
+    @Test("decodes pending status")
+    func decodesPendingStatus() throws {
+        let json = #"{"id": "abc-123", "status": "pending", "create_time": 1000, "update_time": 2000}"#
+            .data(using: .utf8)!
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == "pending")
         #expect(dto.outputs == nil)
     }
 
-    @Test("decodes running with progress")
-    func decodesRunningWithProgress() throws {
-        let json = #"{"status": "running", "progress": {"value": 5, "max": 20}, "node": "KSampler"}"#
+    @Test("decodes in_progress status")
+    func decodesInProgressStatus() throws {
+        let json = #"{"id": "abc-123", "status": "in_progress", "create_time": 1000, "update_time": 2000}"#
             .data(using: .utf8)!
-        let dto = try JSONDecoder().decode(JobStatusDTO.self, from: json)
-        #expect(dto.status == "running")
-        #expect(dto.progress?.value == 5)
-        #expect(dto.progress?.max == 20)
-        #expect(dto.node == "KSampler")
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == "in_progress")
+        #expect(dto.outputs == nil)
     }
 
-    @Test("decodes success with outputs")
-    func decodesSuccessWithOutputs() throws {
+    @Test("decodes completed with outputs")
+    func decodesCompletedWithOutputs() throws {
         let json = """
         {
-          "status": "success",
+          "id": "abc-123",
+          "status": "completed",
+          "create_time": 1000,
+          "update_time": 3000,
           "outputs": {
             "9": {
               "images": [
@@ -59,93 +62,117 @@ struct PollingFallbackTests {
           }
         }
         """.data(using: .utf8)!
-        let dto = try JSONDecoder().decode(JobStatusDTO.self, from: json)
-        #expect(dto.status == "success")
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == "completed")
         #expect(dto.outputs?["9"]?.images?.first?.filename == "out.png")
+    }
+
+    @Test("decodes failed with execution_error")
+    func decodesFailedWithExecutionError() throws {
+        let json = """
+        {
+          "id": "abc-123",
+          "status": "failed",
+          "create_time": 1000,
+          "update_time": 4000,
+          "execution_error": {
+            "node_id": "3",
+            "node_type": "KSampler",
+            "exception_message": "out of memory",
+            "exception_type": "RuntimeError",
+            "traceback": ["line 1", "line 2"]
+          }
+        }
+        """.data(using: .utf8)!
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == "failed")
+        #expect(dto.executionError?.nodeType == "KSampler")
+        #expect(dto.executionError?.exceptionMessage == "out of memory")
+        #expect(dto.executionError?.exceptionType == "RuntimeError")
     }
 
     @Test("decodes unknown fields gracefully")
     func decodesUnknownFieldsGracefully() throws {
-        let json = #"{"status": "running", "some_future_field": {"foo": "bar"}}"#
+        let json = #"{"id": "abc", "status": "in_progress", "some_future_field": {"foo": "bar"}, "create_time": 1, "update_time": 2}"#
             .data(using: .utf8)!
-        let dto = try JSONDecoder().decode(JobStatusDTO.self, from: json)
-        #expect(dto.status == "running")
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == "in_progress")
     }
 
-    // MARK: - Phase derivation (parity with WebSocketSession)
+    // MARK: - Phase derivation
 
-    @Test("derivePhase returns sampling for KSampler node")
-    func derivePhaseSampling() {
-        let dto = JobStatusDTO(
-            status: "running",
-            progress: nil,
-            node: "KSampler",
+    @Test("derivePhase returns executing for in_progress status")
+    func derivePhaseInProgress() {
+        let dto = JobDetailResponse(
+            id: "j1",
+            status: "in_progress",
             outputs: nil,
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
-        #expect(PollingFallback.derivePhase(from: dto) == "sampling")
+        #expect(PollingFallback.derivePhase(from: dto) == "executing")
     }
 
-    @Test("derivePhase returns vae_decode for VAEDecode")
-    func derivePhaseVAE() {
-        let dto = JobStatusDTO(
-            status: "running",
-            progress: nil,
-            node: "VAEDecode",
+    @Test("derivePhase returns queued for pending status")
+    func derivePhasePending() {
+        let dto = JobDetailResponse(
+            id: "j1",
+            status: "pending",
             outputs: nil,
-            error: nil
-        )
-        #expect(PollingFallback.derivePhase(from: dto) == "vae_decode")
-    }
-
-    @Test("derivePhase returns queued for queued status without node")
-    func derivePhaseQueued() {
-        let dto = JobStatusDTO(
-            status: "queued",
-            progress: nil,
-            node: nil,
-            outputs: nil,
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
         #expect(PollingFallback.derivePhase(from: dto) == "queued")
     }
 
-    // MARK: - Fraction clamping
-
-    @Test("deriveFraction clamps to [0, 1]")
-    func deriveFractionClamps() {
-        let over = JobStatusDTO(
-            status: "running",
-            progress: .init(value: 30, max: 20),
-            node: nil,
+    @Test("derivePhase returns saving for completed status")
+    func derivePhaseCompleted() {
+        let dto = JobDetailResponse(
+            id: "j1",
+            status: "completed",
             outputs: nil,
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
-        #expect(PollingFallback.deriveFraction(from: over) == 1.0)
+        #expect(PollingFallback.derivePhase(from: dto) == "saving")
     }
 
-    @Test("deriveFraction returns 0 for nil progress")
-    func deriveFractionNil() {
-        let none = JobStatusDTO(
-            status: "running",
-            progress: nil,
-            node: nil,
-            outputs: nil,
-            error: nil
+    @Test("derivePhase uses node_type from execution_error on failed")
+    func derivePhaseFailedWithNodeType() {
+        let execErr = JobDetailExecutionError(
+            nodeId: "3",
+            nodeType: "KSampler",
+            exceptionMessage: "oom",
+            exceptionType: "RuntimeError",
+            traceback: []
         )
-        #expect(PollingFallback.deriveFraction(from: none) == 0.0)
+        let dto = JobDetailResponse(
+            id: "j1",
+            status: "failed",
+            outputs: nil,
+            executionError: execErr,
+            createTime: nil,
+            updateTime: nil
+        )
+        #expect(PollingFallback.derivePhase(from: dto) == "sampling")
     }
 
-    @Test("deriveFraction collapses NaN / divide-by-zero to 0")
-    func deriveFractionNaN() {
-        let zero = JobStatusDTO(
-            status: "running",
-            progress: .init(value: 0, max: 0),
-            node: nil,
+    // MARK: - Fraction
+
+    @Test("deriveFraction always returns 0 (HTTP endpoint has no progress bucket)")
+    func deriveFractionAlwaysZero() {
+        let dto = JobDetailResponse(
+            id: "j1",
+            status: "in_progress",
             outputs: nil,
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
-        #expect(PollingFallback.deriveFraction(from: zero) == 0.0)
+        #expect(PollingFallback.deriveFraction(from: dto) == 0.0)
     }
 
     // MARK: - Backoff ladder
@@ -174,19 +201,19 @@ struct PollingFallbackTests {
 
     // MARK: - End-to-end via TestURLProtocol
 
-    @Test("queued → running → success yields .queued, .progress, .finalizing, .complete")
+    @Test("pending → in_progress → completed yields .queued, .progress, .finalizing, .complete")
     func happyPath() async throws {
         // Drive the sequence of responses the stub returns. Each
         // request pops the next scripted reply; we return the image
         // bytes on the /api/view call.
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
-        let responses: [(String, String)] = [
-            ("/api/prompt/job-1", #"{"status": "queued"}"#),
-            ("/api/prompt/job-1", #"{"status": "running", "progress": {"value": 2, "max": 10}, "node": "KSampler"}"#),
-            ("/api/prompt/job-1", #"{"status": "running", "progress": {"value": 10, "max": 10}, "node": "KSampler"}"#),
-            ("/api/prompt/job-1", #"""
-            {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
-            """#),
+        let responses: [String] = [
+            #"{"id":"job-1","status":"pending","create_time":1,"update_time":1}"#,
+            #"{"id":"job-1","status":"in_progress","create_time":1,"update_time":2}"#,
+            #"{"id":"job-1","status":"in_progress","create_time":1,"update_time":3}"#,
+            #"""
+            {"id":"job-1","status":"completed","create_time":1,"update_time":4,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
+            """#,
         ]
 
         let counter = RequestCounter()
@@ -202,8 +229,18 @@ struct PollingFallbackTests {
                 )!
                 return (resp, imagePNG)
             }
+            // Regression: assert the polling URL is /api/jobs/{id}, not /api/prompt/{id}
+            if path.contains("/api/prompt/") {
+                let resp = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 404,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: nil
+                )!
+                return (resp, Data())
+            }
             let idx = counter.nextAndIncrement()
-            let (_, body) = responses[min(idx, responses.count - 1)]
+            let body = responses[min(idx, responses.count - 1)]
             let resp = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -244,10 +281,10 @@ struct PollingFallbackTests {
         #expect(queuedCount == 1, "Expected exactly one .queued, got \(queuedCount)")
     }
 
-    @Test("server error status yields .failed(.jobFailed)")
+    @Test("failed status yields .failed(.jobFailed)")
     func failedJobPath() async throws {
         TestURLProtocol.install { request in
-            let body = #"{"status": "error", "node": "KSampler"}"#
+            let body = #"{"id":"job-1","status":"failed","create_time":1,"update_time":2,"execution_error":{"node_id":"3","node_type":"KSampler","exception_message":"oom","exception_type":"RuntimeError","traceback":[]}}"#
             let resp = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -282,13 +319,14 @@ struct PollingFallbackTests {
         }
 
         #expect(sawFailed)
+        // execution_error.node_type is "KSampler" → phaseLabel → "sampling"
         #expect(failurePhase == "sampling")
     }
 
     @Test("cancelled status yields .cancelled and closes stream")
     func cancelledStatus() async throws {
         TestURLProtocol.install { request in
-            let body = #"{"status": "cancelled"}"#
+            let body = #"{"id":"job-1","status":"cancelled","create_time":1,"update_time":2}"#
             let resp = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -355,12 +393,12 @@ struct PollingFallbackTests {
         #expect(sawAuthInvalid)
     }
 
-    @Test("de-dup: running with unchanged phase + fraction does not re-emit")
+    @Test("de-dup: in_progress with unchanged status does not re-emit .progress")
     func dedupProgress() async throws {
         let counter = RequestCounter()
-        let body = #"{"status": "running", "progress": {"value": 2, "max": 10}, "node": "KSampler"}"#
+        let body = #"{"id":"job-1","status":"in_progress","create_time":1,"update_time":2}"#
         let final = #"""
-        {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
+        {"id":"job-1","status":"completed","create_time":1,"update_time":5,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
         """#
 
         TestURLProtocol.install { request in
@@ -404,8 +442,40 @@ struct PollingFallbackTests {
             if case .complete = event { break }
             if case .failed = event { break }
         }
-        // Three identical running payloads should only produce ONE .progress
+        // Three identical in_progress payloads should only produce ONE .progress
+        // (phase="executing", fraction=0.0 — all identical, de-dup fires).
         #expect(progressCount == 1, "Expected exactly one .progress (de-dup), got \(progressCount)")
+    }
+
+    // MARK: - Regression: URL path
+
+    @Test("fetchJobStatus hits /api/jobs/{id} not /api/prompt/{id}")
+    func fetchJobStatusUsesJobsEndpoint() async throws {
+        var capturedPath: String?
+        TestURLProtocol.install { request in
+            capturedPath = request.url?.path
+            let body = #"{"id":"job-99","status":"cancelled","create_time":1,"update_time":2}"#
+            let resp = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (resp, body.data(using: .utf8)!)
+        }
+        defer { TestURLProtocol.uninstall() }
+
+        let transport = Transport(
+            session: TestURLProtocol.makeStubSession(),
+            baseURL: URL(string: "https://example.test")!,
+            credential: .apiKey("test-key")
+        )
+        _ = try await transport.fetchJobStatus(id: "job-99")
+
+        #expect(capturedPath == "/api/jobs/job-99",
+                "Expected /api/jobs/job-99, got \(capturedPath ?? "nil")")
+        #expect(capturedPath?.contains("/api/prompt/") == false,
+                "Must NOT hit the tombstoned /api/prompt/ endpoint")
     }
 }
 

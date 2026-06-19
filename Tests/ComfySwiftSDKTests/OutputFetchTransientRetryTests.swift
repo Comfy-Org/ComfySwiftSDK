@@ -150,10 +150,9 @@ struct OutputFetchTransientRetryTests {
             credential: .apiKey("test-key")
         )
 
-        let dto = JobStatusDTO(
-            status: "success",
-            progress: nil,
-            node: nil,
+        let dto = JobDetailResponse(
+            id: "job-99",
+            status: "completed",
             outputs: [
                 "9": .init(
                     images: [OutputFileRef(filename: "out.png", subfolder: "", type: "output")],
@@ -162,7 +161,9 @@ struct OutputFetchTransientRetryTests {
                     audio: nil
                 )
             ],
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
 
         // Must not throw — should recover from the first ECONNRESET.
@@ -193,10 +194,9 @@ struct OutputFetchTransientRetryTests {
             credential: .apiKey("bad-key")
         )
 
-        let dto = JobStatusDTO(
-            status: "success",
-            progress: nil,
-            node: nil,
+        let dto = JobDetailResponse(
+            id: "job-100",
+            status: "completed",
             outputs: [
                 "9": .init(
                     images: [OutputFileRef(filename: "out.png", subfolder: "", type: "output")],
@@ -205,7 +205,9 @@ struct OutputFetchTransientRetryTests {
                     audio: nil
                 )
             ],
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
 
         var caughtAuthInvalid = false
@@ -243,14 +245,14 @@ struct OutputFetchTransientRetryTests {
                                            headerFields: ["Content-Type": "image/png"])!
                 return (resp, imagePNG)
             }
-            // Status endpoint: return queued → success.
+            // Status endpoint: return pending → completed.
             let idx = statusCalls.nextAndIncrement()
             let body: String
             if idx == 0 {
-                body = #"{"status": "queued"}"#
+                body = #"{"id":"job-retry","status":"pending","create_time":1,"update_time":1}"#
             } else {
                 body = #"""
-                {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
+                {"id":"job-retry","status":"completed","create_time":1,"update_time":2,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
                 """#
             }
             let resp = HTTPURLResponse(url: request.url!, statusCode: 200,
@@ -294,12 +296,13 @@ struct OutputFetchTransientRetryTests {
             baseURL: URL(string: "https://example.test")!,
             credential: .apiKey("test-key")
         )
-        let dto = JobStatusDTO(
-            status: "success",
-            progress: nil,
-            node: nil,
+        let dto = JobDetailResponse(
+            id: "job-empty",
+            status: "completed",
             outputs: nil,
-            error: nil
+            executionError: nil,
+            createTime: nil,
+            updateTime: nil
         )
 
         var caughtEmpty = false

@@ -47,7 +47,7 @@ struct ReattachTransientRetryTests {
                 throw URLError(.badServerResponse)
             }
             let body = #"""
-            {"status": "success", "outputs": {"9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}}}
+            {"id":"job-1","status":"completed","create_time":1,"update_time":2,"outputs":{"9":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}
             """#
             let resp = HTTPURLResponse(
                 url: request.url!, statusCode: 200,

@@ -9,7 +9,7 @@
 //  that picks up the in-flight job wherever it currently is.
 //
 //  Contract (Story 4.4 AC3):
-//    1. Fetch the current job status via a single `GET /api/prompt/{id}`.
+//    1. Fetch the current job status via a single `GET /api/jobs/{id}`.
 //    2. If the job has already terminated, yield the terminal event
 //       (`.complete` / `.failed` / `.cancelled`) and finish.
 //    3. If the job is still queued or running, synthesize a catch-up
@@ -97,7 +97,7 @@ internal actor ReattachCoordinator {
         transport: Transport,
         id: String,
         clock: any Clock<Duration>
-    ) async throws -> JobStatusDTO {
+    ) async throws -> JobDetailResponse {
         let maxAttempts = 3
         var attempt = 0
         while true {
@@ -133,7 +133,7 @@ internal actor ReattachCoordinator {
         // re-established. Without this, a momentary blip on resume
         // falsely terminates a job that is still recoverable.
         // Non-transient failures still terminate immediately.
-        let dto: JobStatusDTO
+        let dto: JobDetailResponse
         do {
             dto = try await fetchJobStatusWithTransientRetry(
                 transport: transport, id: handle.id, clock: clock
@@ -151,8 +151,12 @@ internal actor ReattachCoordinator {
         // Step 2 — if the job has already terminated, emit the terminal
         // event and close. The consumer sees `reattach(to:)` as a
         // one-shot catch-up in this case.
+        //
+        // Status values per `GET /api/jobs/{job_id}` (ingest OpenAPI
+        // `JobDetailResponse`): `pending`, `in_progress`, `completed`,
+        // `failed`, `cancelled`.
         switch dto.status.lowercased() {
-        case "success", "completed", "succeeded":
+        case "completed":
             do {
                 let output = try await PollingFallback.buildOutput(
                     from: dto,
@@ -169,36 +173,42 @@ internal actor ReattachCoordinator {
             continuation.finish()
             return
 
-        case "error", "failed":
+        case "failed":
             let phase = PollingFallback.derivePhase(from: dto)
             continuation.yield(.failed(.jobFailed(phase: phase)))
             continuation.finish()
             return
 
-        case "cancelled", "canceled":
+        case "cancelled":
             continuation.yield(.cancelled)
             continuation.finish()
             return
 
         default:
-            break // active — continue to synthetic catch-up + polling
+            break // pending / in_progress — continue to synthetic catch-up + polling
         }
 
         // Step 3 — job is still active. Emit synthetic catch-up events
         // so the UI state machine jumps to the server's current phase
         // before any new events arrive.
+        //
+        // The HTTP status endpoint does not carry progress fraction or
+        // node-level phase hints (those are WebSocket-only); the SDK
+        // emits a synthetic `.queued` and (for `in_progress`) a coarse
+        // `.progress(fraction: 0, phase: "executing")` to seed the FR21
+        // state machine before the polling loop delivers real updates.
         var lastEmittedPhase: String?
         var lastEmittedFraction: Double = 0.0
         var hasEmittedQueued = false
         var didEmitFinalizing = hasEmittedFinalizing
 
         switch dto.status.lowercased() {
-        case "queued", "pending":
+        case "pending":
             continuation.yield(.queued)
             hasEmittedQueued = true
             lastEmittedPhase = "queued"
 
-        case "running", "executing", "in_progress":
+        case "in_progress":
             if hasEmittedFinalizing {
                 // E2 fix: the UI was already at .finalizing before the
                 // connectivity drop. Emitting .queued + .progress here
