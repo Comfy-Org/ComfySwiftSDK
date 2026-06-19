@@ -1,0 +1,27 @@
+name: CI - Cursor Review Auto-Label
+
+# Thin caller for the shared reusable auto-label workflow in
+# Comfy-Org/github-workflows. Applies the cursor-review label (which
+# ci-cursor-review.yml triggers on) when the PR is "about" an opted-in login:
+#   - assigned            -> the assignee
+#   - opened              -> the PR author (skipped while the PR is a draft)
+#   - ready_for_review    -> the PR author
+# The opt-in roster lives in `vars.CURSOR_REVIEW_OPTED_IN_LOGINS` (whitespace-
+# separated logins) — edit the variable, not this file, to opt people in or out.
+#
+# The label is applied via the CLOUD_CODE_BOT app token inside the reusable
+# workflow (vars.APP_ID + secrets.CLOUD_CODE_BOT_PRIVATE_KEY); a GITHUB_TOKEN-
+# applied label would not trigger the downstream review run.
+
+on:
+  pull_request:
+    types: [assigned, opened, ready_for_review]
+
+jobs:
+  auto-label:
+    permissions:
+      contents: read
+    # Pinned to github-workflows main (dc65b8b). Bump to pick up upstream changes.
+    uses: Comfy-Org/github-workflows/.github/workflows/cursor-review-auto-label.yml@dc65b8b584044be808f1333063007974f0bdb29c # github-workflows main (dc65b8b)
+    secrets:
+      CLOUD_CODE_BOT_PRIVATE_KEY: ${{ secrets.CLOUD_CODE_BOT_PRIVATE_KEY }}

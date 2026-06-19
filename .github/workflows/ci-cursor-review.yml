@@ -1,0 +1,42 @@
+name: CI - Cursor Review
+
+# Thin caller for the shared reusable cursor-review workflow. The review logic
+# (panel matrix, judge consolidation, prompts, post/extract/notify scripts)
+# lives in Comfy-Org/github-workflows — single source of truth, so this repo
+# carries only the repo-specific diff excludes.
+#
+# Auto-labeling on PR assignment stays local in cursor-review-auto-label.yml.
+
+on:
+  pull_request:
+    types: [labeled, unlabeled]
+
+# Cancel any earlier in-flight review run for the same PR when cursor-review is
+# removed or re-applied. Scoping by label name ensures removing an unrelated
+# label does not kill a running cursor review.
+concurrency:
+  group: cursor-review-pr-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: true
+
+jobs:
+  cursor-review:
+    permissions:
+      contents: read
+      pull-requests: write
+    # Pinned to github-workflows main (dc65b8b). The bump-cursor-review-callers
+    # workflow auto-opens a SHA-bump PR here when cursor-review.yml changes
+    # upstream; keep workflows_ref matching so prompts/scripts load from the
+    # same commit.
+    uses: Comfy-Org/github-workflows/.github/workflows/cursor-review.yml@dc65b8b584044be808f1333063007974f0bdb29c # github-workflows main (dc65b8b)
+    with:
+      # Keep the assets ref in lock-step with the `uses:` ref above.
+      workflows_ref: dc65b8b584044be808f1333063007974f0bdb29c
+      # Swift package: drop SPM build/cache dirs from the size budget + the diff
+      # fed to Cursor. (They're gitignored, so this is belt-and-suspenders.)
+      diff_excludes: >-
+        :!**/.build/**
+        :!**/.swiftpm/**
+        :!**/build/**
+    secrets:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
