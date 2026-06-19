@@ -52,8 +52,11 @@
 //                                      at stream start so the FR21 state machine has a uniform
 //                                      `queued → progress → ...` sequence)
 //
-//  Logging in this file in Story 1.5: NONE. SDK observability is
-//  deferred (see Story 1.5 Dev Notes "SDK observability is deferred").
+//  Logging in this file: credential-free error classification only via
+//  `SDKLog` (see SDKLog.swift). Logged: ComfyError case name + jobId
+//  at output-build failures, execution_error frames, and the read-loop
+//  transient→polling handoff decision. NEVER the token, URL, frame
+//  body, output bytes, or any raw Error / URLResponse object.
 //
 //  WebSocket auth: in `.apiKey` mode the key travels in the URL as a
 //  `token` query parameter (`wss://cloud.comfy.org/ws?clientId=...&token=<key>`)
@@ -496,7 +499,9 @@ internal actor WebSocketSession {
                     } catch {
                         // After exhausting retries (or on a non-transient
                         // error), surface the failure as before.
-                        continuation.yield(.failed(Transport.translate(error)))
+                        let translated = Transport.translate(error)
+                        SDKLog.wsOutputBuildFailed(error: translated, jobId: jobId)
+                        continuation.yield(.failed(translated))
                         continuation.finish()
                         return
                     }
@@ -530,6 +535,7 @@ internal actor WebSocketSession {
                             nodeType: decoded.nodeType
                         )
                     }
+                    SDKLog.wsExecutionError(jobId: jobId)
                     continuation.yield(.failed(.unknown(underlying: execError)))
                     continuation.finish()
                     return
@@ -565,6 +571,7 @@ internal actor WebSocketSession {
             // `AsyncThrowingStream` continuation. The consumer never
             // observes the transport switch.
             if PollingFallback.isTransient(translated) {
+                SDKLog.wsReadLoopError(error: translated, jobId: jobId, handingOffToPolling: true)
                 let lastPhase = didEmitQueued ? phaseLabel(for: lastNodeName) : nil
                 await Self.handOffToPolling(
                     transport: transport,
@@ -579,6 +586,7 @@ internal actor WebSocketSession {
                 )
                 return
             }
+            SDKLog.wsReadLoopError(error: translated, jobId: jobId, handingOffToPolling: false)
             continuation.yield(.failed(translated))
             continuation.finish()
         }
