@@ -28,4 +28,9 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test
+        # --no-parallel is required: the URLProtocol-stub tests share a
+        # process-global handler guarded by a blocking lock. Under Swift
+        # Testing's default cross-suite parallelism, those blocking acquires
+        # starve the cooperative thread pool on low-core CI runners and
+        # deadlock. Serial execution removes the contention.
+        run: swift test --no-parallel
