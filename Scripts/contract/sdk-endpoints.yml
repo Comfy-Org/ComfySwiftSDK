@@ -26,8 +26,8 @@ endpoints:
     used_by: Transport.cancelJob
     note: >-
       Cancel an in-flight job via {"delete": [prompt_id]}. Marked deprecated in the
-      contract; the documented replacement is POST /api/jobs/{job_id}/cancel. Reported
-      as a non-blocking warning until the SDK migrates onto the /api/jobs surface.
+      contract; the documented replacement is POST /api/jobs/{job_id}/cancel. Non-blocking
+      warning until the cancel migration (issue #12) lands.
 
   - method: GET
     path: /api/view
@@ -40,14 +40,11 @@ endpoints:
     note: Upload image inputs before submitting the prompt.
 
   - method: GET
-    path: /api/prompt/{prompt_id}
+    path: /api/jobs/{job_id}
     used_by: Transport.fetchJobStatus
-    required: false
     note: >-
-      Legacy per-prompt status read used by the reattach/polling paths. NOT present
-      in the front-facing contract; the documented replacement is GET /api/jobs/{job_id}
-      (GET /api/job/{job_id}/status is itself deprecated). Tracked as a non-blocking
-      warning until the SDK migrates onto the /api/jobs surface.
+      Per-job status read for the reattach/polling paths. Migrated here from the
+      tombstoned GET /api/prompt/{prompt_id} (prompt_id == job_id). `getJobDetail`.
 
 # Surfaces the SDK uses that the OpenAPI contract does not — and cannot — model.
 # Listed for transparency; the checker ignores them.
