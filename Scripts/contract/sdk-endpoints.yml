@@ -24,7 +24,10 @@ endpoints:
   - method: POST
     path: /api/queue
     used_by: Transport.cancelJob
-    note: 'Cancel an in-flight job via {"delete": [prompt_id]}.'
+    note: >-
+      Cancel an in-flight job via {"delete": [prompt_id]}. Marked deprecated in the
+      contract; the documented replacement is POST /api/jobs/{job_id}/cancel. Reported
+      as a non-blocking warning until the SDK migrates onto the /api/jobs surface.
 
   - method: GET
     path: /api/view
