@@ -168,6 +168,15 @@ internal actor Transport {
     }
 
     internal func submitJob(_ request: WorkflowRequest) async throws -> JobHandle {
+        // Interim guard (issue #16): patchLoadImageNodes rewrites *every* LoadImage node, so a
+        // second image input would silently overwrite the first ("last image wins"). Until keyed
+        // input→node mapping lands, fail fast rather than bind the wrong image to a node.
+        let imageInputCount = request.inputs.reduce(into: 0) { count, input in
+            if case .image = input { count += 1 }
+        }
+        guard imageInputCount <= 1 else {
+            throw ComfyError.serverRejected(reason: .other("multiple_image_inputs_unsupported"))
+        }
         var workflowJSON = request.workflowJSON
         for input in request.inputs {
             switch input {
