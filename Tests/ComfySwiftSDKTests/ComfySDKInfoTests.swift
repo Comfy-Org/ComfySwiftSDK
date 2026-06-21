@@ -1,12 +1,3 @@
-//
-//  ComfySDKInfoTests.swift
-//  ComfySwiftSDKTests
-//
-//  Guards the client traceability header: the SDK stamps
-//  `X-Comfy-Client: comfyswiftsdk/<version>` on every request via the
-//  session configuration.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK

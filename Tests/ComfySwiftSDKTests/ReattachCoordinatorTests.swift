@@ -1,30 +1,9 @@
-//
-//  ReattachCoordinatorTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 4.4 AC3 / AC7 — unit tests for `ReattachCoordinator`.
-//
-//  Covers:
-//    - Terminal-state reattach (success / error / cancelled) — emits
-//      terminal event and closes with no polling continuation.
-//    - Active-state reattach (queued / running) — emits synthetic
-//      catch-up, then continues polling until terminal.
-//    - De-duplication across the catch-up → polling boundary.
-//
-//  Uses `TestURLProtocol` to script HTTP responses. Serialized to
-//  keep the global URL protocol handler race-free.
-//
-//  Story 4.4.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
 
 @Suite("ReattachCoordinator", .serialized)
 struct ReattachCoordinatorTests {
-
-    // MARK: - Terminal-state reattach
 
     @Test("reattach to an already-completed job emits .complete and closes")
     func terminalSuccess() async throws {
@@ -72,7 +51,6 @@ struct ReattachCoordinatorTests {
 
         #expect(events.count == 1, "Expected exactly one event, got \(events.count)")
         if case .complete = events.first {
-            // ok
         } else {
             Issue.record("Expected .complete, got \(String(describing: events.first))")
         }
@@ -149,18 +127,14 @@ struct ReattachCoordinatorTests {
         }
 
         #expect(events.count == 1)
-        if case .cancelled = events.first { /* ok */ } else {
+        if case .cancelled = events.first { } else {
             Issue.record("Expected .cancelled, got \(String(describing: events.first))")
         }
     }
 
-    // MARK: - Active-state reattach with polling continuation
-
     @Test("reattach to a running job emits synthetic .queued + .progress then continues via polling")
     func activeRunningContinues() async throws {
         let counter = RequestCounter()
-        // First response (catch-up fetch): running @ 2/10 on KSampler
-        // Subsequent (polling): running @ 8/10 on KSampler → success
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
         let catchUp = #"""
         {"id":"job-1","status":"in_progress","create_time":1,"update_time":2}
@@ -219,12 +193,6 @@ struct ReattachCoordinatorTests {
             if events.count > 20 { break }
         }
 
-        // Expect synthetic .queued + .progress (from catch-up), plus
-        // .finalizing + .complete.
-        // The HTTP polling endpoint does not carry per-node progress
-        // fraction, so all `in_progress` responses produce the same
-        // phase/fraction; de-dup suppresses the polling-sourced repeat
-        // and we see exactly one .progress total.
         let queuedCount = events.filter { if case .queued = $0 { return true }; return false }.count
         #expect(queuedCount == 1, "Expected exactly one .queued (no duplicate across catch-up → polling), got \(queuedCount)")
 
@@ -293,14 +261,11 @@ struct ReattachCoordinatorTests {
             if events.count > 20 { break }
         }
 
-        // Exactly one .queued across catch-up + polling continuation.
         let queuedCount = events.filter { if case .queued = $0 { return true }; return false }.count
         #expect(queuedCount == 1, "Expected exactly one .queued, got \(queuedCount)")
         #expect(events.contains(where: { if case .progress = $0 { return true }; return false }))
         #expect(events.contains(where: { if case .complete = $0 { return true }; return false }))
     }
-
-    // MARK: - Failure modes
 
     @Test("reattach with auth failure on catch-up GET surfaces .failed(.authInvalid)")
     func catchUpAuthFailure() async throws {
@@ -336,16 +301,8 @@ struct ReattachCoordinatorTests {
         #expect(sawAuthInvalid)
     }
 
-    // MARK: - Story 4.9: reattach-by-promptId (Option B SDK surface)
-
     @Test("ComfyCloudClient.reattach(promptId:) returns a valid stream")
     func reattachByPromptIdReturnsStream() async throws {
-        // Behavioral smoke test: the Option B entry point constructs a
-        // JobHandle internally from the promptId and forwards to the
-        // coordinator. The returned stream is a valid AsyncThrowingStream
-        // that can be cancelled cleanly. The full terminal/catch-up paths
-        // are already covered via the coordinator-level tests above — this
-        // test asserts the façade wiring exists and is callable.
         let client = ComfyCloudClient(apiKey: "test-key")
         let stream = client.reattach(promptId: "some-prompt-id")
 
@@ -355,25 +312,16 @@ struct ReattachCoordinatorTests {
         }
         task.cancel()
         _ = await task.value
-        // If we got here without crashing, the wiring is sound.
         #expect(Bool(true))
     }
 
     @Test("ComfyCloudClient.reattach(promptId:) forwards promptId as JobHandle.id (source-level)")
     func reattachByPromptIdUsesPromptIdAsHandleId() throws {
-        // Source-level enforcement: the Option B wrapper in
-        // ComfyCloudClient.reattach(promptId:) must construct a JobHandle
-        // whose `id` is the caller's promptId, then forward to the
-        // coordinator. This keeps the opaque-JobHandle invariant intact
-        // while making `JobHandle.init` usable only from inside the SDK.
         let testFileURL = URL(fileURLWithPath: #filePath)
-        // ComfySwiftSDK is a standalone package now: the package root is three
-        // levels up from this file (Tests/ComfySwiftSDKTests/<this>), not five
-        // (the old Comfy-iOS/Packages/ComfySwiftSDK/… nested layout).
         let packageRoot = testFileURL
-            .deletingLastPathComponent() // ComfySwiftSDKTests/
-            .deletingLastPathComponent() // Tests/
-            .deletingLastPathComponent() // ComfySwiftSDK/ (package root)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let clientPath = packageRoot.appendingPathComponent(
             "Sources/ComfySwiftSDK/Public/ComfyCloudClient.swift"
         )

@@ -1,21 +1,9 @@
-//
-//  TransportPOSIXTranslationTests.swift
-//  ComfySwiftSDKTests
-//
-//  Verifies that POSIX socket-drop error codes are mapped to `.network`
-//  (transient) by `Transport.translate(_:)`, so `PollingFallback.isTransient`
-//  returns `true` and the polling loop retries rather than surfacing a
-//  false failure when the OS kills the socket during backgrounding.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
 
 @Suite("Transport POSIX translation")
 struct TransportPOSIXTranslationTests {
-
-    // MARK: - POSIX socket-drop codes → transient
 
     @Test("ENOTCONN translates to a transient error")
     func enotconn() {
@@ -73,8 +61,6 @@ struct TransportPOSIXTranslationTests {
         #expect(PollingFallback.isTransient(result))
     }
 
-    // MARK: - Regression: existing classifications must not shift
-
     @Test("URLError.cancelled still maps to .cancelled (non-transient)")
     func urlErrorCancelledIsNonTransient() {
         let err = URLError(.cancelled)
@@ -104,7 +90,6 @@ struct TransportPOSIXTranslationTests {
 
     @Test("Unknown POSIX code does not become transient")
     func unknownPOSIXCodeIsNotTransient() {
-        // EBADF (9) is not in the socket-drop list — should fall through to .unknown
         let err = NSError(domain: NSPOSIXErrorDomain, code: Int(EBADF))
         let result = Transport.translate(err)
         #expect(!PollingFallback.isTransient(result))

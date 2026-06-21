@@ -1,20 +1,7 @@
-//
-//  ReattachTransientRetryTests.swift
-//  ComfySwiftSDKTests
-//
-//  The reattach catch-up GET must retry a *transient* failure
-//  (e.g. NSURLErrorBadServerResponse / -1011 thrown by a socket the OS
-//  just resumed from suspension) instead of surfacing it as a terminal
-//  `.failed`. A non-transient failure must still terminate immediately,
-//  with no infinite retry.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
 
-/// Thread-safe call counter for the stub handler (called off the
-/// URL-loading queue, so it must be safe to mutate concurrently).
 private final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
@@ -41,8 +28,6 @@ struct ReattachTransientRetryTests {
                 )!
                 return (resp, imagePNG)
             }
-            // Catch-up status fetch: fail transiently on the FIRST attempt
-            // (mirrors the -1011 a just-resumed socket throws), succeed after.
             if statusCalls.next() == 1 {
                 throw URLError(.badServerResponse)
             }
@@ -75,7 +60,6 @@ struct ReattachTransientRetryTests {
         #expect(statusCalls.peek() >= 2, "Catch-up GET should have been retried after the transient failure")
         #expect(events.count == 1, "Expected exactly one event, got \(events.count): \(events)")
         if case .complete = events.first {
-            // recovered — the transient blip was retried, terminal job resolved
         } else {
             Issue.record("Expected .complete after transient-retry recovery, got \(String(describing: events.first))")
         }
@@ -86,7 +70,7 @@ struct ReattachTransientRetryTests {
         let statusCalls = CallCounter()
         TestURLProtocol.install { _ in
             _ = statusCalls.next()
-            throw NonTransientTestError()   // → ComfyError.unknown → not transient
+            throw NonTransientTestError()
         }
         defer { TestURLProtocol.uninstall() }
 
@@ -106,7 +90,6 @@ struct ReattachTransientRetryTests {
 
         #expect(statusCalls.peek() == 1, "Non-transient failure must not be retried, got \(statusCalls.peek()) call(s)")
         if case .failed = events.first {
-            // ok — surfaced as a terminal failure, exactly once
         } else {
             Issue.record("Expected .failed for a non-transient catch-up error, got \(String(describing: events.first))")
         }

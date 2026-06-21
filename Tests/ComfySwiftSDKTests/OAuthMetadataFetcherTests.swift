@@ -1,26 +1,3 @@
-//
-//  OAuthMetadataFetcherTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 8.1 AC2 — unit tests for `OAuthMetadataFetcher` against
-//  mocked metadata responses. Uses `TestURLProtocol` for request
-//  interception — no live network.
-//
-//  Covers:
-//    - Valid metadata (matching issuer + S256) → success, parsed values
-//    - Mismatched issuer → .authInvalid
-//    - Mismatched authorization_endpoint / token_endpoint → .authInvalid
-//    - code_challenge_methods_supported without S256 → .authInvalid
-//    - code_challenge_methods_supported absent → .authInvalid
-//    - Malformed JSON → .unknown(underlying:)
-//    - HTTP 401 → .authInvalid, HTTP 503 → .network (Transport.checkStatus)
-//    - URLError.notConnectedToInternet/.networkConnectionLost → .offline
-//    - URLError.timedOut → .timeout, URLError.cancelled → .cancelled
-//    - Generic URLError → .network(underlying:)
-//
-//  Story 8.1.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
@@ -28,10 +5,6 @@ import Foundation
 @Suite("OAuthMetadataFetcher — AC2", .serialized)
 struct OAuthMetadataFetcherTests {
 
-    // MARK: - Helpers
-
-    /// Install a `TestURLProtocol` handler that answers every request
-    /// with the given JSON body and a 200 status.
     private func installJSON(_ body: String) {
         TestURLProtocol.install { request in
             let resp = HTTPURLResponse(
@@ -44,8 +17,6 @@ struct OAuthMetadataFetcherTests {
         }
     }
 
-    /// Install a `TestURLProtocol` handler that answers every request
-    /// with the given HTTP status and (typically an error-page) body.
     private func installStatus(_ statusCode: Int, body: String = #"{"error":"server_error"}"#) {
         TestURLProtocol.install { request in
             let resp = HTTPURLResponse(
@@ -61,8 +32,6 @@ struct OAuthMetadataFetcherTests {
     private func makeFetcher() -> OAuthMetadataFetcher {
         OAuthMetadataFetcher(session: TestURLProtocol.makeStubSession())
     }
-
-    // MARK: - Success path (Task 4.3)
 
     @Test("valid metadata with matching issuer and S256 succeeds with parsed values")
     func validMetadataSucceeds() async throws {
@@ -84,8 +53,6 @@ struct OAuthMetadataFetcherTests {
         #expect(metadata.codeChallengeMethodsSupported == ["S256"])
     }
 
-    // MARK: - Issuer mismatch (Task 4.4)
-
     @Test("mismatched issuer throws .authInvalid")
     func mismatchedIssuerThrowsAuthInvalid() async throws {
         installJSON(#"""
@@ -102,13 +69,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
     }
-
-    // MARK: - Endpoint mismatches (review H2)
 
     @Test("mismatched authorization_endpoint throws .authInvalid")
     func mismatchedAuthorizationEndpointThrowsAuthInvalid() async throws {
@@ -126,7 +90,6 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
@@ -148,13 +111,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
     }
-
-    // MARK: - S256 missing from the list (Task 4.5)
 
     @Test("code_challenge_methods_supported without S256 throws .authInvalid")
     func missingS256ThrowsAuthInvalid() async throws {
@@ -172,13 +132,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
     }
-
-    // MARK: - S256 list absent entirely (Task 4.6)
 
     @Test("absent code_challenge_methods_supported throws .authInvalid")
     func absentMethodsThrowsAuthInvalid() async throws {
@@ -195,13 +152,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
     }
-
-    // MARK: - Malformed metadata (Task 4.7)
 
     @Test("malformed JSON throws .unknown(underlying:)")
     func malformedJSONThrowsUnknown() async throws {
@@ -212,13 +166,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .unknown, got success")
         } catch ComfyError.unknown {
-            // expected
         } catch {
             Issue.record("Expected .unknown, got \(error)")
         }
     }
-
-    // MARK: - Offline (Task 4.8)
 
     @Test("URLError.notConnectedToInternet throws .offline")
     func notConnectedThrowsOffline() async throws {
@@ -231,13 +182,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .offline, got success")
         } catch ComfyError.offline {
-            // expected
         } catch {
             Issue.record("Expected .offline, got \(error)")
         }
     }
-
-    // MARK: - Generic network failure (Task 4.9)
 
     @Test("generic URLError throws .network(underlying:)")
     func genericURLErrorThrowsNetwork() async throws {
@@ -250,13 +198,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .network, got success")
         } catch ComfyError.network {
-            // expected
         } catch {
             Issue.record("Expected .network, got \(error)")
         }
     }
-
-    // MARK: - HTTP error statuses (review H1 — Transport.checkStatus path)
 
     @Test("HTTP 401 throws .authInvalid, not .unknown")
     func http401ThrowsAuthInvalid() async throws {
@@ -267,7 +212,6 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
@@ -282,13 +226,10 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .network, got success")
         } catch ComfyError.network {
-            // expected
         } catch {
             Issue.record("Expected .network, got \(error)")
         }
     }
-
-    // MARK: - Documented URLError mappings (review M2)
 
     @Test("URLError.networkConnectionLost throws .offline")
     func connectionLostThrowsOffline() async throws {
@@ -301,7 +242,6 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .offline, got success")
         } catch ComfyError.offline {
-            // expected
         } catch {
             Issue.record("Expected .offline, got \(error)")
         }
@@ -318,7 +258,6 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .timeout, got success")
         } catch ComfyError.timeout {
-            // expected
         } catch {
             Issue.record("Expected .timeout, got \(error)")
         }
@@ -335,7 +274,6 @@ struct OAuthMetadataFetcherTests {
             _ = try await makeFetcher().fetchAndValidate()
             Issue.record("Expected .cancelled, got success")
         } catch ComfyError.cancelled {
-            // expected
         } catch {
             Issue.record("Expected .cancelled, got \(error)")
         }

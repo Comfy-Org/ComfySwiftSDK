@@ -1,17 +1,3 @@
-//
-//  OAuthConfigurationTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 8.1 AC1 — pins every `OAuthConfiguration` constant to the
-//  Comfy Cloud authorization-server contract
-//  (sprint-change-proposal-2026-06-09.md §1 / §4.7). A drifted
-//  constant here means every later Epic 8 story builds on the wrong
-//  endpoint, so these are deliberately exact string comparisons —
-//  no URL-normalization leniency.
-//
-//  Story 8.1.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
@@ -77,8 +63,6 @@ struct OAuthConfigurationTests {
     func clientIdMatchesContract() {
         #expect(OAuthConfiguration.clientId == "comfy-ios")
     }
-
-    // MARK: - Redirect-policy structural rules (redirect_policy.go)
 
     @Test("redirect URI scheme contains a dot — bare comfy:// is denylisted")
     func redirectURISchemeContainsDot() throws {

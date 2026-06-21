@@ -1,28 +1,3 @@
-//
-//  RefreshOn401Tests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 8.5 AC3-AC6 — proactive refresh, 401-intercept-retry-once,
-//  serialized concurrency, tokenStore-before-retry. Uses
-//  `TestURLProtocol`. No live network.
-//
-//  Mock topology: `Transport`'s stubbed session serves BOTH the API
-//  endpoints (`/api/queue`) and the OAuth token endpoint
-//  (`/oauth/token`) — `OAuthTokenRefreshExecutor` is constructed with
-//  Transport's own session, so a single `TestURLProtocol.handler`
-//  observes the whole refresh choreography and can count refresh
-//  POSTs (the AC5 `refreshCallCount == 1` invariant).
-//
-//  Mock realism: the fixture mimics the Keychain write-then-read path
-//  — `tokenStore` writes the rotated access token into a lock-guarded
-//  `TokenBox`, `tokenProvider` reads it. The `/api/queue` mock decides
-//  401-vs-200 by which Bearer token a request actually carries (stale
-//  vs refreshed), so test outcomes track the auth state machine rather
-//  than fragile call-count choreography.
-//
-//  Story 8.5.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
@@ -30,10 +5,6 @@ import Foundation
 @Suite("RefreshOn401 — Story 8.5 AC3-AC6", .serialized)
 struct RefreshOn401Tests {
 
-    // MARK: - Helper types
-
-    /// Thread-safe counter for recording call counts in URL protocol
-    /// handlers (which run on URL-loading threads).
     final class CallCounter: @unchecked Sendable {
         private let lock = NSLock()
         private var _count = 0
@@ -41,8 +12,6 @@ struct RefreshOn401Tests {
         var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
     }
 
-    /// Thread-safe access-token slot — the test's stand-in for the
-    /// Keychain. `tokenStore` writes it, `tokenProvider` reads it.
     final class TokenBox: @unchecked Sendable {
         private let lock = NSLock()
         private var _accessToken: String
@@ -51,7 +20,6 @@ struct RefreshOn401Tests {
         func set(_ token: String) { lock.lock(); defer { lock.unlock() }; _accessToken = token }
     }
 
-    /// Thread-safe append-only event log for call-order assertions.
     final class EventLog: @unchecked Sendable {
         private let lock = NSLock()
         private var _events: [String] = []
@@ -59,11 +27,6 @@ struct RefreshOn401Tests {
         var events: [String] { lock.lock(); defer { lock.unlock() }; return _events }
     }
 
-    /// One-shot async latch: `wait()` suspends until `signal()` fires.
-    /// `signal()` is idempotent; a `wait()` after the signal returns
-    /// immediately. Used as the AC5 rendezvous (review 8-5, LOW: the
-    /// previous fixed 750ms sleep made the test timing-dependent under
-    /// CI load).
     final class AsyncLatch: @unchecked Sendable {
         private let lock = NSLock()
         private var signaled = false
@@ -92,8 +55,6 @@ struct RefreshOn401Tests {
         }
     }
 
-    // MARK: - Fixtures
-
     private static let baseURL = URL(string: "https://cloud.comfy.org")!
     private static let staleToken = "current-access-token"
     private static let freshToken = "refreshed-access-token"
@@ -101,15 +62,6 @@ struct RefreshOn401Tests {
         {"access_token":"refreshed-access-token","refresh_token":"new-refresh-token","expires_in":900}
         """
 
-    /// Build a minimal `oauthRefreshable` credential for testing.
-    /// - `tokenBox`: shared access-token slot (Keychain stand-in).
-    /// - `expiryOffset`: seconds from now for the stored expiry
-    ///   (`nil` → no expiry stored, which Transport treats as expired).
-    /// - `tokenStoreCounter` / `eventLog`: optional observers.
-    /// - `refreshProviderGate`: optional suspension point inside
-    ///   `refreshProvider`, used by the concurrency test to hold the
-    ///   coalescing window open until every concurrent 401 interceptor
-    ///   has provably arrived (latch rendezvous, not wall-clock).
     private func makeRefreshableCredential(
         tokenBox: TokenBox,
         expiryOffset: TimeInterval?,
@@ -164,14 +116,6 @@ struct RefreshOn401Tests {
         return (response, #"{"error":"unauthorized"}"#.data(using: .utf8)!)
     }
 
-    /// Install the standard two-endpoint mock:
-    ///   - `POST /oauth/token` → counts into `refreshCounter`, returns
-    ///     `refreshStatus` (200 with a rotated pair, or 401 = family
-    ///     revoked).
-    ///   - `GET /api/queue` → counts into `queueCounter`, captures the
-    ///     `Authorization` header into `eventLog`, and answers via
-    ///     `queueResponder` (defaults to: 200 iff the request carries
-    ///     the refreshed token, 401 otherwise).
     private func installMock(
         refreshCounter: CallCounter,
         queueCounter: CallCounter,
@@ -206,8 +150,6 @@ struct RefreshOn401Tests {
         }
     }
 
-    // MARK: - AC3: proactive pre-request refresh
-
     @Test("proactive refresh fires when the token is within the 60s margin")
     func proactive_refresh_fires_when_token_near_expiry() async throws {
         let refreshCounter = CallCounter()
@@ -224,8 +166,6 @@ struct RefreshOn401Tests {
 
         #expect(refreshCounter.count == 1)
         #expect(queueCounter.count == 1)
-        // The request that actually went out carried the FRESH token —
-        // the caller never observes a stale token being sent.
         #expect(eventLog.events.contains("queue(fresh)"))
         #expect(!eventLog.events.contains("queue(stale)"))
     }
@@ -239,7 +179,7 @@ struct RefreshOn401Tests {
             refreshCounter: refreshCounter,
             queueCounter: queueCounter,
             eventLog: eventLog,
-            queueResponder: { Self.ok($0) }  // accept the stale token: no 401 leg in this test
+            queueResponder: { Self.ok($0) }
         )
         defer { TestURLProtocol.uninstall() }
 
@@ -269,8 +209,6 @@ struct RefreshOn401Tests {
         #expect(refreshCounter.count == 1)
     }
 
-    // MARK: - AC4: 401-intercept-refresh-retry-once
-
     @Test("401 triggers exactly one refresh and a successful retry")
     func test401_triggers_refresh_then_successful_retry() async throws {
         let refreshCounter = CallCounter()
@@ -282,11 +220,11 @@ struct RefreshOn401Tests {
         let transport = makeTransport(
             credential: makeRefreshableCredential(tokenBox: tokenBox, expiryOffset: 300)
         )
-        try await transport.validateAuth()  // must not throw
+        try await transport.validateAuth()
 
         #expect(refreshCounter.count == 1)
-        #expect(queueCounter.count == 2)  // original 401 + successful retry
-        #expect(tokenBox.accessToken == Self.freshToken)  // rotated pair persisted
+        #expect(queueCounter.count == 2)
+        #expect(tokenBox.accessToken == Self.freshToken)
     }
 
     @Test("second 401 after a successful refresh surfaces .authExpired, never a loop")
@@ -296,7 +234,7 @@ struct RefreshOn401Tests {
         installMock(
             refreshCounter: refreshCounter,
             queueCounter: queueCounter,
-            queueResponder: { Self.unauthorized($0) }  // ALWAYS 401, even with the fresh token
+            queueResponder: { Self.unauthorized($0) }
         )
         defer { TestURLProtocol.uninstall() }
 
@@ -308,13 +246,12 @@ struct RefreshOn401Tests {
             try await transport.validateAuth()
             Issue.record("Expected .authExpired, got success")
         } catch ComfyError.authExpired {
-            // expected
         } catch {
             Issue.record("Expected .authExpired, got \(error)")
         }
 
-        #expect(refreshCounter.count == 1)  // exactly one refresh — retry-once, no loop
-        #expect(queueCounter.count == 2)    // original + single retry, nothing further
+        #expect(refreshCounter.count == 1)
+        #expect(queueCounter.count == 2)
     }
 
     @Test("refresh failure (401 on the refresh POST — family revoked) surfaces .authExpired")
@@ -336,13 +273,12 @@ struct RefreshOn401Tests {
             try await transport.validateAuth()
             Issue.record("Expected .authExpired, got success")
         } catch ComfyError.authExpired {
-            // expected — .authExpired (family revoked), NOT .authInvalid
         } catch {
             Issue.record("Expected .authExpired, got \(error)")
         }
 
         #expect(refreshCounter.count == 1)
-        #expect(queueCounter.count == 1)  // no retry after a failed refresh
+        #expect(queueCounter.count == 1)
     }
 
     @Test("apiKey mode 401 still surfaces .authInvalid (no refresh machinery) — regression")
@@ -361,16 +297,13 @@ struct RefreshOn401Tests {
             try await transport.validateAuth()
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected — pass-through, no .authExpired remap in apiKey mode
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
 
         #expect(refreshCounter.count == 0)
-        #expect(queueCounter.count == 1)  // no retry in apiKey mode
+        #expect(queueCounter.count == 1)
     }
-
-    // MARK: - AC6: tokenStore persistence before retry
 
     @Test("tokenStore is called BEFORE the retried request reaches the server")
     func tokenStore_called_before_retry_request() async throws {
@@ -393,25 +326,13 @@ struct RefreshOn401Tests {
         try await transport.validateAuth()
 
         #expect(tokenStoreCounter.count == 1)
-        // Exact choreography: stale request → refresh POST → Keychain
-        // write (tokenStore) → retry with the fresh token. If the retry
-        // ever lands before tokenStore, the order (or the "fresh" label,
-        // which can only come from the post-tokenStore TokenBox read)
-        // breaks.
         #expect(eventLog.events == ["queue(stale)", "refresh-endpoint", "tokenStore", "queue(fresh)"])
     }
-
-    // MARK: - AC5: serialized refresh under concurrency
 
     @Test("N concurrent 401s coalesce into exactly one refresh network call")
     func concurrent_401s_trigger_exactly_one_refresh() async throws {
         let refreshCounter = CallCounter()
         let queueCounter = CallCounter()
-        // Rendezvous (review 8-5, LOW — replaces a fixed 750ms sleep):
-        // the refresh Task is held inside refreshProvider until the
-        // queue mock has SERVED all three stale 401s, so every caller
-        // provably enters its 401-intercept leg while the single refresh
-        // is still in flight — independent of scheduler timing.
         let staleCounter = CallCounter()
         let allStale401sServed = AsyncLatch()
         installMock(
@@ -438,11 +359,6 @@ struct RefreshOn401Tests {
                 expiryOffset: 300,
                 refreshProviderGate: {
                     await allStale401sServed.wait()
-                    // The latch guarantees all three stale 401s were
-                    // served; this short grace covers only the residual
-                    // hop from each caller's 401 throw to its
-                    // `performRefresh` entry on the actor. It is not
-                    // load-bearing for arrival, unlike the old sleep.
                     try await Task.sleep(for: .milliseconds(100))
                 }
             )
@@ -452,16 +368,10 @@ struct RefreshOn401Tests {
             for _ in 0..<3 {
                 group.addTask { try await transport.validateAuth() }
             }
-            try await group.waitForAll()  // all three must succeed
+            try await group.waitForAll()
         }
 
-        // The AC5 invariant — the load-bearing assertion: one refresh
-        // window, one network call.
         #expect(refreshCounter.count == 1)
-        // Every caller ends in success. The latch makes "3 stale 401s +
-        // 3 fresh retries" the expected choreography, but the bound is
-        // deliberately loose (review 8-5): the queue-call count is not
-        // the AC5 contract, refreshCounter is.
         #expect(queueCounter.count >= 3)
     }
 }
