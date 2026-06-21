@@ -398,9 +398,10 @@ internal actor Transport {
         } catch {
             throw ComfyError.unknown(underlying: error)
         }
+        let safeExtension = Self.sanitizedExtension(suggestedExtension)
         let destination = cachesDir
             .appendingPathComponent("ComfySwiftSDK", isDirectory: true)
-            .appendingPathComponent("\(UUID().uuidString).\(suggestedExtension)")
+            .appendingPathComponent("\(UUID().uuidString).\(safeExtension)")
         do {
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(),
@@ -414,6 +415,17 @@ internal actor Transport {
             throw ComfyError.unknown(underlying: error)
         }
         return destination
+    }
+
+    /// Normalizes a server-supplied file extension before it is interpolated into an on-disk
+    /// cache path. The value is derived from the server's response (content type / filename), so
+    /// a `/`, `\`, or `..` in it could shape the path outside the intended `UUID().<ext>` filename.
+    /// Anything not matching `[a-z0-9]{1,10}` (slashes, dots, traversal, empty, overlong) collapses
+    /// to `bin`, so a hostile or garbled extension can never escape the filename shape.
+    static func sanitizedExtension(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        let isSafe = lowered.range(of: #"^[a-z0-9]{1,10}$"#, options: .regularExpression) != nil
+        return isSafe ? lowered : "bin"
     }
 
     static func patchLoadImageNodes(
