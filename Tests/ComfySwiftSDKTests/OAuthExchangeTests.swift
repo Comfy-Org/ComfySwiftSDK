@@ -1,28 +1,3 @@
-//
-//  OAuthExchangeTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 8.3 AC5 — unit coverage for the client side of the PKCE
-//  authorization-code flow: `ComfyCloudClient.buildAuthorizationRequest()`
-//  (authorize-URL construction, verifier/challenge/state generation)
-//  and `OAuthExchanger.exchange(code:codeVerifier:)` against a mocked
-//  token endpoint via `TestURLProtocol`. No live network — the live
-//  end-to-end check is gated on `RUN_OAUTH_INTEGRATION=1` below until
-//  the `comfy-ios` backend client is seeded (Story 8.1 gate).
-//
-//  Covers:
-//    - Authorize URL carries every required parameter (AC1)
-//    - code_verifier is 43 base64url chars and fresh per attempt
-//    - code_challenge == BASE64URL(SHA256(code_verifier)) (RFC 7636)
-//    - state is fresh per attempt
-//    - Exchange request: POST, form-encoded, all params, no client_secret (AC2)
-//    - Exchange success → decoded OAuthTokenResponse
-//    - HTTP 401 → .authInvalid, HTTP 400 → ComfyError (Transport.checkStatus)
-//    - Malformed token JSON → .unknown(underlying:)
-//
-//  Story 8.3.
-//
-
 import Testing
 import Foundation
 import CryptoKit
@@ -31,23 +6,15 @@ import CryptoKit
 @Suite("OAuthExchange — AC1/AC2/AC5", .serialized)
 struct OAuthExchangeTests {
 
-    // MARK: - Helpers
-
-    /// The base64url alphabet RFC 7636 §4.1 permits for a verifier.
     private static let base64URLAlphabet = Set(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     )
 
-    /// Parse the query items of a URL into a dictionary (last write
-    /// wins — the authorize URL never repeats a name).
     private func queryItems(of url: URL) -> [String: String] {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         return Dictionary(items.map { ($0.name, $0.value ?? "") }) { _, last in last }
     }
 
-    /// Drain a captured `URLRequest`'s body. `URLProtocol` surfaces
-    /// POST bodies as `httpBodyStream`, not `httpBody`, so read the
-    /// stream when the plain property is nil.
     private static func bodyData(of request: URLRequest) -> Data {
         if let body = request.httpBody { return body }
         guard let stream = request.httpBodyStream else { return Data() }
@@ -65,8 +32,6 @@ struct OAuthExchangeTests {
         return data
     }
 
-    /// Decode an `application/x-www-form-urlencoded` body into a
-    /// dictionary of percent-DECODED key/value pairs.
     private func formFields(_ body: Data) -> [String: String] {
         var components = URLComponents()
         components.percentEncodedQuery = String(data: body, encoding: .utf8)
@@ -78,8 +43,6 @@ struct OAuthExchangeTests {
         OAuthExchanger(session: TestURLProtocol.makeStubSession())
     }
 
-    /// Install a `TestURLProtocol` handler answering with the given
-    /// status + JSON body, capturing each request into `box`.
     private func installTokenEndpoint(
         status: Int,
         body: String,
@@ -97,7 +60,6 @@ struct OAuthExchangeTests {
         }
     }
 
-    /// Thread-safe box for the request the stub handler captured.
     final class CapturedRequestBox: @unchecked Sendable {
         private let lock = NSLock()
         private var _request: URLRequest?
@@ -110,8 +72,6 @@ struct OAuthExchangeTests {
         var request: URLRequest? { lock.lock(); defer { lock.unlock() }; return _request }
         var body: Data { lock.lock(); defer { lock.unlock() }; return _body }
     }
-
-    // MARK: - buildAuthorizationRequest (AC1, Tasks 7.3–7.6)
 
     @Test("buildAuthorizationRequest — all required params present and correct")
     func authorizeURLCarriesAllRequiredParams() throws {
@@ -128,16 +88,11 @@ struct OAuthExchangeTests {
         #expect(params["state"]?.isEmpty == false)
         #expect(params["code_challenge"]?.isEmpty == false)
         #expect(params["code_challenge_method"] == "S256")
-        // Server requires non-empty scope at parse time (request.go:63,
-        // ErrEmptyScope) — omitting it is the "invalid authorization
-        // request parameters" failure found in live testing 2026-06-11.
         #expect(params["scope"] == OAuthConfiguration.scope)
         #expect(params["scope"]?.isEmpty == false)
         #expect(params["resource"] == "https://cloud.comfy.org/api")
         #expect(params["redirect_uri"] == "org.comfy.ios://oauth-callback")
 
-        // The URL's state must be the same value the app is told to
-        // verify against the callback.
         #expect(params["state"] == request.state)
     }
 
@@ -146,14 +101,11 @@ struct OAuthExchangeTests {
         let first = ComfyCloudClient.buildAuthorizationRequest()
         let second = ComfyCloudClient.buildAuthorizationRequest()
 
-        // base64url of 32 bytes without padding = exactly 43 chars
-        // (RFC 7636 requires 43–128).
         #expect(first.codeVerifier.count == 43)
         #expect(second.codeVerifier.count == 43)
         #expect(first.codeVerifier.allSatisfy { Self.base64URLAlphabet.contains($0) })
         #expect(second.codeVerifier.allSatisfy { Self.base64URLAlphabet.contains($0) })
 
-        // Fresh per attempt — verifier reuse breaks the PKCE guarantee.
         #expect(first.codeVerifier != second.codeVerifier)
     }
 
@@ -176,8 +128,6 @@ struct OAuthExchangeTests {
         let states = (0..<3).map { _ in ComfyCloudClient.buildAuthorizationRequest().state }
         #expect(Set(states).count == 3)
     }
-
-    // MARK: - Exchange request encoding (AC2, Task 7.7)
 
     @Test("exchange request is a form-encoded POST with all params and no client_secret")
     func exchangeRequestBodyEncoding() async throws {
@@ -208,12 +158,8 @@ struct OAuthExchangeTests {
         #expect(fields["resource"] == "https://cloud.comfy.org/api")
         #expect(fields["redirect_uri"] == "org.comfy.ios://oauth-callback")
 
-        // Public client — a client_secret in the body would mean a
-        // secret shipped on-device (token_endpoint_auth_method=none).
         #expect(fields["client_secret"] == nil)
     }
-
-    // MARK: - Exchange responses (AC2/AC4, Tasks 7.8–7.11)
 
     @Test("exchange success decodes to OAuthTokenResponse")
     func exchangeSuccessDecodesTokenResponse() async throws {
@@ -242,7 +188,6 @@ struct OAuthExchangeTests {
             _ = try await makeExchanger().exchange(code: "c", codeVerifier: "v")
             Issue.record("Expected .authInvalid, got success")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
@@ -257,8 +202,6 @@ struct OAuthExchangeTests {
             _ = try await makeExchanger().exchange(code: "expired", codeVerifier: "v")
             Issue.record("Expected a ComfyError, got success")
         } catch is ComfyError {
-            // expected — taxonomy boundary holds (no raw URLError /
-            // DecodingError escapes the SDK)
         } catch {
             Issue.record("Expected a ComfyError, got \(error)")
         }
@@ -273,18 +216,12 @@ struct OAuthExchangeTests {
             _ = try await makeExchanger().exchange(code: "c", codeVerifier: "v")
             Issue.record("Expected .unknown, got success")
         } catch ComfyError.unknown {
-            // expected
         } catch {
             Issue.record("Expected .unknown, got \(error)")
         }
     }
 }
 
-// MARK: - Live integration (gated, Task 7.12)
-
-/// True only when the developer explicitly opted into live OAuth
-/// integration runs — same opt-in pattern as
-/// `OAuthMetadataIntegrationTests` (Story 8.1 AC4).
 private var runOAuthIntegration: Bool {
     ProcessInfo.processInfo.environment["RUN_OAUTH_INTEGRATION"] == "1"
 }
@@ -292,16 +229,11 @@ private var runOAuthIntegration: Bool {
 @Suite("OAuthExchange — live integration (gated)")
 struct OAuthExchangeIntegrationTests {
 
-    // TODO(backend-gate): remove skip once comfy-ios client is seeded
-    // (Story 8.1 Backend Gate Checklist).
     @Test(
         "live authorize endpoint accepts the seeded comfy-ios client and redirect URI",
         .enabled(if: runOAuthIntegration, "Requires seeded comfy-ios OAuth client — set RUN_OAUTH_INTEGRATION=1")
     )
     func liveAuthorizeEndpointAcceptsSeededClient() async throws {
-        // A GET to the fully-formed authorize URL must not be rejected
-        // for the client or redirect URI — the server should answer
-        // with the login flow (2xx or a redirect), not an OAuth error.
         let request = ComfyCloudClient.buildAuthorizationRequest()
         let session = URLSession(configuration: .ephemeral)
         let (data, response) = try await session.data(

@@ -1,24 +1,3 @@
-//
-//  BearerInjectionTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 8.5 AC1/AC2 — Bearer header injection and WebSocket `?token=`
-//  JWT injection for `oauthRefreshable` mode. Uses `TestURLProtocol`.
-//  No live network.
-//
-//  Assertion seam note (deviation from the story's test sketch,
-//  recorded in the Dev Agent Record): HTTP assertions drive `Transport`
-//  directly with a stubbed session — the same seam `CredentialModeTests`
-//  uses, because `ComfyCloudClient` owns a private non-stubbed
-//  `URLSession` and intercepting it would require live network.
-//  WebSocket assertions call `WebSocketSession.buildWebSocketURL`
-//  directly, because `URLSessionWebSocketTask` bypasses custom
-//  `URLProtocol`s entirely — capturing the WS URL through a stubbed
-//  session is impossible without a real connection attempt.
-//
-//  Story 8.5.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
@@ -26,10 +5,6 @@ import Foundation
 @Suite("BearerInjection — Story 8.5 AC1/AC2", .serialized)
 struct BearerInjectionTests {
 
-    // MARK: - Helpers
-
-    /// Thread-safe capture box for requests seen by `TestURLProtocol`
-    /// (same pattern as `CredentialModeTests.RequestCapture`).
     private final class RequestCapture: @unchecked Sendable {
         private let lock = NSLock()
         private var _requests: [URLRequest] = []
@@ -55,11 +30,6 @@ struct BearerInjectionTests {
         )
     }
 
-    /// A minimal `oauthRefreshable` credential whose refresh machinery
-    /// is never exercised: the stored expiry is `.distantFuture` (not a
-    /// wall-clock offset — review 8-5, LOW: an NTP/clock adjustment
-    /// mid-test could push a relative expiry inside the 60s proactive
-    /// margin), so `applyAuth` falls through to the plain token read.
     private func makeRefreshableCredential(token: String) -> ComfyCredential {
         .oauthRefreshable(
             tokenProvider: { token },
@@ -91,8 +61,6 @@ struct BearerInjectionTests {
             .value
     }
 
-    // MARK: - AC1: HTTP Bearer header injection
-
     @Test("oauthRefreshable HTTP request carries Authorization: Bearer and no X-API-Key")
     func oauthRefreshable_http_request_carries_Bearer_header() async throws {
         let capture = installCapture()
@@ -120,8 +88,6 @@ struct BearerInjectionTests {
         #expect(request.value(forHTTPHeaderField: "X-API-Key") == "test-key")
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
     }
-
-    // MARK: - AC2: WebSocket ?token= JWT injection
 
     @Test("oauthRefreshable WebSocket URL carries ?token=<jwt>")
     func oauthRefreshable_websocket_url_carries_token_query_param() async throws {
@@ -174,7 +140,6 @@ struct BearerInjectionTests {
             )
             Issue.record("Expected .authInvalid, got a URL")
         } catch ComfyError.authInvalid {
-            // expected — no unauthenticated socket may open
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }
@@ -190,7 +155,6 @@ struct BearerInjectionTests {
             )
             Issue.record("Expected .authInvalid, got a URL")
         } catch ComfyError.authInvalid {
-            // expected
         } catch {
             Issue.record("Expected .authInvalid, got \(error)")
         }

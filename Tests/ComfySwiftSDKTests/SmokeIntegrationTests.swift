@@ -1,27 +1,3 @@
-//
-//  SmokeIntegrationTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 1.5 AC #14 — disabled-by-default integration smoke test that
-//  exercises the full `submit` → `events(for:)` round-trip against a
-//  real Comfy Cloud account. The test is gated three ways:
-//
-//    1. `.disabled` annotation so a normal `xcodebuild test` skips it
-//       without intervention.
-//    2. `try #require(!apiKey.isEmpty, ...)` short-circuit if the
-//       `COMFY_API_KEY` environment variable is unset.
-//    3. The repo never contains a real key. The dev runs the test
-//       once locally with `COMFY_API_KEY=sk-... xcodebuild test ...`
-//       (or by setting the env var on the scheme in Xcode), captures
-//       the result in the Story 1.5 Debug Log References section,
-//       and re-disables the test before commit.
-//
-//  This is the only thing in Story 1.5 that exercises the WebSocket
-//  transport against a live server; everything else is unit-level.
-//
-//  Story 1.5.
-//
-
 import Testing
 import Foundation
 import ComfySwiftSDK
@@ -39,12 +15,6 @@ struct SmokeIntegrationTests {
 
         let client = ComfyCloudClient(apiKey: apiKey)
 
-        // Minimal text→image workflow JSON for Comfy Cloud. The exact
-        // node graph below is the smallest viable text→image graph
-        // (CheckpointLoaderSimple → CLIPTextEncode × 2 → EmptyLatentImage
-        // → KSampler → VAEDecode → SaveImage). The Story 1.5 dev should
-        // adjust the model name to whatever's currently available on
-        // the dev's Comfy Cloud account before running.
         let workflow: [String: Any] = [
             "3": [
                 "class_type": "KSampler",
@@ -139,15 +109,9 @@ struct SmokeIntegrationTests {
         #expect(imageBytes != nil, "Smoke run completed but had no image bytes")
     }
 
-    // Story 8.5 AC9 — live silent-refresh check across a >15-minute
-    // session (the access-token TTL), so a real proactive refresh and a
-    // real `grant_type=refresh_token` rotation are observed end-to-end.
     @Test(.disabled("Requires live Comfy Cloud key, seeded comfy-ios client (Story 8.1 gate), and >15min session"))
     func silent_refresh_across_token_expiry() async throws {
         let apiKey = ProcessInfo.processInfo.environment["COMFY_API_KEY"] ?? ""
         try #require(!apiKey.isEmpty, "Set COMFY_API_KEY to run this test")
-        // TODO: wire oauthRefreshable credential with real Keychain reads once
-        // Story 8.6 (first-run UX wiring) lands — the credential construction
-        // requires a signed-in session. Placeholder body only.
     }
 }
