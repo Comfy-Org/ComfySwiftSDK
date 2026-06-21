@@ -1,31 +1,9 @@
-//
-//  PollingFallbackTests.swift
-//  ComfySwiftSDKTests
-//
-//  Story 4.4 AC8 — unit tests for `PollingFallback`.
-//
-//  Covers:
-//    - Wire-format decoding (`JobDetailResponse` shapes for pending /
-//      in_progress / completed / failed / cancelled)
-//    - `JobEvent` mapping parity with `WebSocketSession`
-//    - De-duplication (no duplicate `.queued`, no repeat `.progress`)
-//    - Exponential backoff on transport errors (ladder: 2s → 4s → 8s cap)
-//    - Terminal-state output download via `Transport`
-//    - Regression: request URL is `/api/jobs/{id}` (not `/api/prompt/{id}`)
-//
-//  Uses `TestURLProtocol` to stub HTTP responses — no real network.
-//
-//  Story 4.4.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
 
 @Suite("PollingFallback", .serialized)
 struct PollingFallbackTests {
-
-    // MARK: - JobDetailResponse decoding
 
     @Test("decodes pending status")
     func decodesPendingStatus() throws {
@@ -99,8 +77,6 @@ struct PollingFallbackTests {
         #expect(dto.status == "in_progress")
     }
 
-    // MARK: - Phase derivation
-
     @Test("derivePhase returns executing for in_progress status")
     func derivePhaseInProgress() {
         let dto = JobDetailResponse(
@@ -160,8 +136,6 @@ struct PollingFallbackTests {
         #expect(PollingFallback.derivePhase(from: dto) == "sampling")
     }
 
-    // MARK: - Fraction
-
     @Test("deriveFraction always returns 0 (HTTP endpoint has no progress bucket)")
     func deriveFractionAlwaysZero() {
         let dto = JobDetailResponse(
@@ -175,14 +149,11 @@ struct PollingFallbackTests {
         #expect(PollingFallback.deriveFraction(from: dto) == 0.0)
     }
 
-    // MARK: - Backoff ladder
-
     @Test("backoffDelay ladder: 2s → 4s → 8s cap")
     func backoffLadder() {
         #expect(PollingFallback.backoffDelay(for: 0) == .milliseconds(2000))
         #expect(PollingFallback.backoffDelay(for: 1) == .milliseconds(4000))
         #expect(PollingFallback.backoffDelay(for: 2) == .milliseconds(8000))
-        // Beyond the ladder: clamped to the last rung.
         #expect(PollingFallback.backoffDelay(for: 10) == .milliseconds(8000))
     }
 
@@ -192,20 +163,14 @@ struct PollingFallbackTests {
         #expect(PollingFallback.isTransient(.timeout))
         #expect(PollingFallback.isTransient(.network(underlying: URLError(.timedOut))))
         #expect(PollingFallback.isTransient(.rateLimited(retryAfter: nil)))
-        // Non-transient:
         #expect(!PollingFallback.isTransient(.authInvalid))
         #expect(!PollingFallback.isTransient(.contentFiltered))
         #expect(!PollingFallback.isTransient(.jobFailed(phase: "sampling")))
         #expect(!PollingFallback.isTransient(.cancelled))
     }
 
-    // MARK: - End-to-end via TestURLProtocol
-
     @Test("pending → in_progress → completed yields .queued, .progress, .finalizing, .complete")
     func happyPath() async throws {
-        // Drive the sequence of responses the stub returns. Each
-        // request pops the next scripted reply; we return the image
-        // bytes on the /api/view call.
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
         let responses: [String] = [
             #"{"id":"job-1","status":"pending","create_time":1,"update_time":1}"#,
@@ -229,7 +194,6 @@ struct PollingFallbackTests {
                 )!
                 return (resp, imagePNG)
             }
-            // Regression: assert the polling URL is /api/jobs/{id}, not /api/prompt/{id}
             if path.contains("/api/prompt/") {
                 let resp = HTTPURLResponse(
                     url: request.url!,
@@ -271,12 +235,10 @@ struct PollingFallbackTests {
             if events.count > 20 { break }
         }
 
-        // Must contain .queued, at least one .progress, .finalizing, .complete
         #expect(events.contains(where: { if case .queued = $0 { return true }; return false }))
         #expect(events.contains(where: { if case .progress = $0 { return true }; return false }))
         #expect(events.contains(where: { if case .finalizing = $0 { return true }; return false }))
         #expect(events.contains(where: { if case .complete = $0 { return true }; return false }))
-        // De-dup: exactly one .queued.
         let queuedCount = events.filter { if case .queued = $0 { return true }; return false }.count
         #expect(queuedCount == 1, "Expected exactly one .queued, got \(queuedCount)")
     }
@@ -319,7 +281,6 @@ struct PollingFallbackTests {
         }
 
         #expect(sawFailed)
-        // execution_error.node_type is "KSampler" → phaseLabel → "sampling"
         #expect(failurePhase == "sampling")
     }
 
@@ -442,12 +403,8 @@ struct PollingFallbackTests {
             if case .complete = event { break }
             if case .failed = event { break }
         }
-        // Three identical in_progress payloads should only produce ONE .progress
-        // (phase="executing", fraction=0.0 — all identical, de-dup fires).
         #expect(progressCount == 1, "Expected exactly one .progress (de-dup), got \(progressCount)")
     }
-
-    // MARK: - Regression: URL path
 
     @Test("fetchJobStatus hits /api/jobs/{id} not /api/prompt/{id}")
     func fetchJobStatusUsesJobsEndpoint() async throws {
@@ -479,9 +436,6 @@ struct PollingFallbackTests {
     }
 }
 
-// MARK: - Test helpers
-
-/// Thread-safe counter for scripted response sequences.
 final class RequestCounter: @unchecked Sendable {
     private var value: Int = 0
     private let lock = NSLock()
@@ -493,8 +447,6 @@ final class RequestCounter: @unchecked Sendable {
     }
 }
 
-/// A `Clock` that returns immediately from every `sleep(for:)` call so
-/// tests don't actually wait for polling / backoff intervals.
 struct ImmediateClock: Clock {
     struct Instant: InstantProtocol {
         var offset: Duration

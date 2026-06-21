@@ -113,8 +113,8 @@ returned, or interpolated into error messages.
 ## Status
 
 **Pre-1.0.** The SDK is battle-tested by the Comfy Go iOS app, builds clean, and ships with a full test
-suite (134 tests). The public API may still shift before a tagged 1.0 — pin to a commit if you need
-stability today. Feedback on the surface is exactly what we're looking for at this stage.
+suite. The public API may still shift before a tagged 1.0 — pin to a commit if you need
+stability today. Feedback on the surface is what we're looking for at this stage.
 
 ## Contributing
 

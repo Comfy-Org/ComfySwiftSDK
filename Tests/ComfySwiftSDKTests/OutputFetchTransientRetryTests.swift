@@ -1,29 +1,9 @@
-//
-//  OutputFetchTransientRetryTests.swift
-//  ComfySwiftSDKTests
-//
-//  Verifies that a transient network error on the output-download step
-//  (ECONNRESET, .network, .offline, .timeout) does NOT surface as
-//  `.failed` — the retry helper recovers and yields `.complete(output)`.
-//
-//  Also covers the regression cases:
-//    - A genuine non-transient output error (empty output, decode
-//      failure) still surfaces as `.failed`.
-//    - `.cancelled` / auth / `.jobFailed` classification is unchanged.
-//
-//  Uses `TestURLProtocol` to script per-call HTTP responses, and
-//  `PollingFallback.withTransientRetry` directly for the unit-level
-//  assertion.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
 
 @Suite("Output fetch transient retry", .serialized)
 struct OutputFetchTransientRetryTests {
-
-    // MARK: - Unit: withTransientRetry
 
     @Test("succeeds on first attempt when no error")
     func noErrorPassThrough() async throws {
@@ -42,8 +22,6 @@ struct OutputFetchTransientRetryTests {
         let result: Int = try await PollingFallback.withTransientRetry {
             callCount += 1
             if callCount < 2 {
-                // Throw a transient POSIX error — same domain used in the
-                // backgrounding scenario (ECONNRESET on a resumed socket).
                 let posixErr = NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))
                 throw Transport.translate(posixErr)
             }
@@ -96,7 +74,6 @@ struct OutputFetchTransientRetryTests {
             caughtAuthInvalid = true
         }
         #expect(caughtAuthInvalid)
-        // Must NOT retry — should have thrown on the first call.
         #expect(callCount == 1)
     }
 
@@ -116,25 +93,20 @@ struct OutputFetchTransientRetryTests {
         #expect(callCount == 1)
     }
 
-    // MARK: - Integration: PollingFallback.buildOutput retries transient
-
     @Test("buildOutput retries transient error on downloadView and succeeds")
     func buildOutputRetryOnTransientDownload() async throws {
-        // Script: first /api/view call fails with ECONNRESET; second succeeds.
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
         let viewCallCount = RequestCounter()
 
         TestURLProtocol.install { request in
             let path = request.url?.path ?? ""
             guard path.contains("/api/view") else {
-                // Unexpected call — return a safe default.
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200,
                                           httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 return (resp, Data())
             }
             let idx = viewCallCount.nextAndIncrement()
             if idx == 0 {
-                // Simulate a stale-connection reset on the first attempt.
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))
             }
             let resp = HTTPURLResponse(url: request.url!, statusCode: 200,
@@ -166,7 +138,6 @@ struct OutputFetchTransientRetryTests {
             updateTime: nil
         )
 
-        // Must not throw — should recover from the first ECONNRESET.
         let output = try await PollingFallback.buildOutput(
             from: dto,
             transport: transport,
@@ -174,13 +145,11 @@ struct OutputFetchTransientRetryTests {
             jobId: "job-99"
         )
         #expect(!output.files.isEmpty)
-        // The view endpoint was called twice: once failing, once succeeding.
         #expect(viewCallCount.nextAndIncrement() == 2)
     }
 
     @Test("buildOutput surfaces non-transient error as failure")
     func buildOutputNonTransientFails() async throws {
-        // A 401 on the /api/view call is non-transient — must throw immediately.
         TestURLProtocol.install { request in
             let resp = HTTPURLResponse(url: request.url!, statusCode: 401,
                                        httpVersion: "HTTP/1.1", headerFields: nil)!
@@ -224,8 +193,6 @@ struct OutputFetchTransientRetryTests {
         #expect(caughtAuthInvalid)
     }
 
-    // MARK: - Integration: PollingFallback eventStream end-to-end with transient on download
-
     @Test("polling success path retries transient view error and yields .complete")
     func pollingSuccessRetryTransientView() async throws {
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
@@ -237,7 +204,6 @@ struct OutputFetchTransientRetryTests {
             if path.contains("/api/view") {
                 let idx = viewCalls.nextAndIncrement()
                 if idx == 0 {
-                    // First view call: simulate a stale-connection reset.
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))
                 }
                 let resp = HTTPURLResponse(url: request.url!, statusCode: 200,
@@ -245,7 +211,6 @@ struct OutputFetchTransientRetryTests {
                                            headerFields: ["Content-Type": "image/png"])!
                 return (resp, imagePNG)
             }
-            // Status endpoint: return pending → completed.
             let idx = statusCalls.nextAndIncrement()
             let body: String
             if idx == 0 {
@@ -286,11 +251,8 @@ struct OutputFetchTransientRetryTests {
         #expect(!sawFailed)
     }
 
-    // MARK: - Regression: empty output still surfaces as .failed
-
     @Test("execution_success with empty buffered refs yields .failed (EmptyOutputError)")
     func emptyOutputSurfacesAsFailed() async throws {
-        // PollingFallback.buildOutput throws when imageRefs and videoRefs are both empty.
         let transport = Transport(
             session: TestURLProtocol.makeStubSession(),
             baseURL: URL(string: "https://example.test")!,
@@ -319,8 +281,6 @@ struct OutputFetchTransientRetryTests {
         #expect(caughtEmpty)
     }
 
-    // MARK: - Regression: cancelled classification unchanged
-
     @Test("isTransient(.cancelled) returns false")
     func cancelledIsNotTransient() {
         #expect(!PollingFallback.isTransient(.cancelled))
@@ -335,8 +295,6 @@ struct OutputFetchTransientRetryTests {
     func jobFailedIsNotTransient() {
         #expect(!PollingFallback.isTransient(.jobFailed(phase: "vae_decode")))
     }
-
-    // MARK: - Regression: ECONNRESET is still transient
 
     @Test("POSIX ECONNRESET translates to a transient ComfyError")
     func econnresetIsTransient() {

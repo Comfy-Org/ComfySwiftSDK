@@ -1,24 +1,3 @@
-//
-//  JobStatusEndpointMigrationTests.swift
-//  ComfySwiftSDKTests
-//
-//  Acceptance tests for the job-status endpoint migration from the
-//  tombstoned `GET /api/prompt/{id}` to the canonical
-//  `GET /api/jobs/{id}`.
-//
-//  Covers:
-//    - Reattach path: `completed` → `.complete(output)` (with real output)
-//    - Reattach path: `failed` (with execution_error) → `.failed(.jobFailed)`
-//    - Polling path: `completed` → `.complete(output)`
-//    - Polling path: `failed` → `.failed(.jobFailed)`
-//    - Polling path: `pending` / `in_progress` → keeps polling (no terminal event)
-//    - Regression: request URL is `/api/jobs/{id}`, never `/api/prompt/{id}`
-//    - Regression: WebSocket live-stream path unchanged (no job-status fetch)
-//    - Regression: auth / cancel / rate-limit classifications unchanged
-//
-//  Uses `TestURLProtocol` for all HTTP interception.
-//
-
 import Testing
 import Foundation
 @testable import ComfySwiftSDK
@@ -26,14 +5,11 @@ import Foundation
 @Suite("Job status endpoint migration", .serialized)
 struct JobStatusEndpointMigrationTests {
 
-    // MARK: - Reattach path: completed → .complete
-
     @Test("reattach: completed JobDetailResponse resolves to .complete(output)")
     func reattachCompletedResolvesToComplete() async throws {
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
         TestURLProtocol.install { request in
             let path = request.url?.path ?? ""
-            // Fail loudly if the old tombstoned endpoint is hit.
             if path.contains("/api/prompt/") {
                 let resp = HTTPURLResponse(
                     url: request.url!, statusCode: 404,
@@ -93,8 +69,6 @@ struct JobStatusEndpointMigrationTests {
         }
     }
 
-    // MARK: - Reattach path: failed → .failed with execution_error
-
     @Test("reattach: failed JobDetailResponse with execution_error surfaces .failed(.jobFailed)")
     func reattachFailedSurfacesJobFailed() async throws {
         TestURLProtocol.install { request in
@@ -147,15 +121,12 @@ struct JobStatusEndpointMigrationTests {
 
         #expect(events.count == 1, "Terminal failed → exactly one event")
         if case .failed(.jobFailed(let phase)) = events.first {
-            // node_type "KSampler" → phaseLabel → "sampling"
             #expect(phase == "sampling",
                     "execution_error.node_type must inform the phase label")
         } else {
             Issue.record("Expected .failed(.jobFailed), got \(String(describing: events.first))")
         }
     }
-
-    // MARK: - Polling path: completed → .complete
 
     @Test("polling: completed JobDetailResponse resolves to .complete(output)")
     func pollingCompletedResolvesToComplete() async throws {
@@ -177,7 +148,6 @@ struct JobStatusEndpointMigrationTests {
                     headerFields: ["Content-Type": "image/png"])!
                 return (resp, imagePNG)
             }
-            // First poll: pending; second: completed.
             let idx = counter.nextAndIncrement()
             let body: String
             if idx == 0 {
@@ -219,8 +189,6 @@ struct JobStatusEndpointMigrationTests {
         }
         #expect(sawComplete)
     }
-
-    // MARK: - Polling path: failed → .failed
 
     @Test("polling: failed JobDetailResponse surfaces .failed(.jobFailed)")
     func pollingFailedSurfacesJobFailed() async throws {
@@ -278,19 +246,14 @@ struct JobStatusEndpointMigrationTests {
             if case .failed = event { break }
         }
         #expect(sawFailed)
-        // node_type "VAEDecode" → phaseLabel → "vae_decode"
         #expect(phase == "vae_decode")
     }
-
-    // MARK: - Polling: pending / in_progress keeps polling
 
     @Test("polling: pending then in_progress does not terminate the stream")
     func pollingActiveStatesKeepPolling() async throws {
         let counter = RequestCounter()
         let imagePNG = Data([0x89, 0x50, 0x4E, 0x47])
 
-        // Serve pending, in_progress, in_progress, then completed so the
-        // stream terminates. Confirm no terminal event appeared early.
         TestURLProtocol.install { request in
             let path = request.url?.path ?? ""
             if path.contains("/api/view") {
@@ -340,18 +303,13 @@ struct JobStatusEndpointMigrationTests {
             if events.count > 20 { break }
         }
 
-        // The stream must have gone through queued + progress + finalizing
-        // before landing on complete — never terminated early on pending/in_progress.
         #expect(events.contains(where: { if case .queued = $0 { return true }; return false }),
                 "pending must emit .queued")
         #expect(events.contains(where: { if case .complete = $0 { return true }; return false }),
                 "stream must eventually reach .complete")
-        // No .failed event (active states should not terminate the stream).
         #expect(!events.contains(where: { if case .failed = $0 { return true }; return false }),
                 "pending/in_progress must not yield .failed")
     }
-
-    // MARK: - Regression: URL path
 
     @Test("fetchJobStatus request URL is /api/jobs/{id}")
     func fetchJobStatusUrlIsJobsEndpoint() async throws {
@@ -380,8 +338,6 @@ struct JobStatusEndpointMigrationTests {
         #expect(!path.contains("/api/prompt/"),
                 "Must NOT hit the tombstoned /api/prompt/ endpoint; got \(path)")
     }
-
-    // MARK: - Regression: auth / cancel / rate-limit classifications unchanged
 
     @Test("401 on fetchJobStatus still maps to .authInvalid (not a new error class)")
     func authClassificationUnchanged() async throws {

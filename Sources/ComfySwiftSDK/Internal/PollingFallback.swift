@@ -1,57 +1,9 @@
-//
-//  PollingFallback.swift
-//  ComfySwiftSDK
-//
-//  Polling fallback for the WebSocket transport. Used when the
-//  WebSocket either drops mid-stream (see `WebSocketSession`'s
-//  fallback handoff) or is unavailable from the start (cellular
-//  networks, restricted proxies — PRD risk table line 397). Also
-//  used by `ReattachCoordinator` as the continuation transport
-//  when the reattach flow cannot re-establish a WebSocket.
-//
-//  Transport-agnostic contract (architecture.md §Naming Patterns
-//  line 256): the consumer of the `AsyncThrowingStream<JobEvent, Error>`
-//  cannot tell whether a frame came from WebSocket or polling. Every
-//  `JobEvent` case yielded here is identical in shape to the matching
-//  case yielded by `WebSocketSession`.
-//
-//  Polling cadence:
-//    - Active-state poll interval: ~1s (matches the WebSocket's
-//      effective update frequency for the FR21 ticker).
-//    - Exponential backoff on transport errors: 2s → 4s → 8s cap.
-//      The backoff counter resets on a successful poll.
-//
-//  De-duplication:
-//    - The loop tracks the last-emitted phase label and skips
-//      `.progress` emissions whose phase + fraction are unchanged.
-//    - `.queued`/`.finalizing`/`.complete`/`.failed`/`.cancelled`
-//      are terminal or one-shot — each is emitted at most once.
-//    - A `lastEmittedPhase` seed lets the WebSocket handoff path
-//      (Story 4.4 Task 4) avoid re-emitting a phase the UI
-//      already saw.
-//
-//  Logging: credential-free error classification only via `SDKLog`
-//  (see SDKLog.swift). ComfyError case name + jobId at give-up and
-//  output-assembly failure paths. NEVER credential / body / raw error.
-//
-//  Story 4.4.
-//
-
 import Foundation
 
-/// Polling-based event stream for an in-flight Comfy Cloud job.
-/// Hits `GET /api/jobs/{job_id}` via `Transport` at ~1s cadence
-/// and translates the response into the same `JobEvent` values the
-/// WebSocket transport yields.
 internal actor PollingFallback {
 
-    /// Active-state poll interval (matches the WebSocket's effective
-    /// FR21 ticker cadence).
     static let activePollInterval: Duration = .milliseconds(1000)
 
-    /// Exponential backoff ladder used on transport errors. After the
-    /// last entry the loop keeps polling at the max interval until
-    /// either the server recovers or the consumer cancels.
     static let backoffLadder: [Duration] = [
         .milliseconds(2000),
         .milliseconds(4000),
@@ -61,8 +13,6 @@ internal actor PollingFallback {
     private let transport: Transport
     private let jobId: String
     private let startTime: Date
-    /// Clock injected so tests can drive time forward without real
-    /// sleeps. Not part of any public contract.
     private let clock: any Clock<Duration>
 
     internal init(
@@ -77,22 +27,6 @@ internal actor PollingFallback {
         self.clock = clock
     }
 
-    /// Open a cold `AsyncThrowingStream<JobEvent, Error>` that polls
-    /// the server until the job reaches a terminal status.
-    ///
-    /// - Parameters:
-    ///   - lastEmittedPhase: the last `JobEvent` phase the consumer
-    ///     has already observed. Used for de-duplication — if the
-    ///     first poll returns the same phase, the loop skips emitting
-    ///     it. Pass `nil` for a fresh stream (no prior phase seen).
-    ///   - lastEmittedFraction: the last `.progress` fraction the
-    ///     consumer has observed. Seeded alongside `lastEmittedPhase`
-    ///     so the WS→polling handoff and `ReattachCoordinator`
-    ///     catch-up don't re-emit the progress value the UI already
-    ///     has. Defaults to `0.0` for a fresh stream.
-    ///   - hasEmittedQueued: whether the consumer has already seen
-    ///     `.queued`. Matches `WebSocketSession`'s "at most one
-    ///     `.queued`" contract on FR21.
     nonisolated internal func eventStream(
         lastEmittedPhase: String? = nil,
         lastEmittedFraction: Double = 0.0,
@@ -119,10 +53,6 @@ internal actor PollingFallback {
             }
             continuation.onTermination = { @Sendable reason in
                 task.cancel()
-                // Story 4.7, AC7: mirror WebSocketSession's behavior —
-                // fire best-effort server-side cancel when the consumer
-                // task is cancelled. Detached so the termination closure
-                // returns immediately.
                 if case .cancelled = reason {
                     Task.detached {
                         await transport.cancelJob(id: jobId)
@@ -131,8 +61,6 @@ internal actor PollingFallback {
             }
         }
     }
-
-    // MARK: - Poll loop
 
     private static func runPollLoop(
         transport: Transport,
@@ -150,12 +78,6 @@ internal actor PollingFallback {
         var didEmitQueued: Bool = initialQueuedEmitted
         var didEmitFinalizing: Bool = initialFinalizingEmitted
         var backoffIndex: Int = 0
-        // cursor-reviews Fix C: tolerate eventually-consistent success.
-        // The server may flip `status` to "success" a poll or two before
-        // the `outputs` map is populated. Treat that as non-terminal and
-        // keep polling (capped) rather than immediately failing with
-        // `EmptyOutputError`, which would kill the stream for a job
-        // that did complete correctly.
         var successWithoutOutputsRetries: Int = 0
         let successWithoutOutputsMaxRetries: Int = 8
 
@@ -163,10 +85,8 @@ internal actor PollingFallback {
             let dto: JobDetailResponse
             do {
                 dto = try await transport.fetchJobStatus(id: jobId)
-                backoffIndex = 0 // success resets the backoff ladder
+                backoffIndex = 0
             } catch let error as ComfyError {
-                // Transient transport errors back off; permanent
-                // errors (auth, server rejection) terminate.
                 if isTransient(error) {
                     let delay = backoffDelay(for: backoffIndex)
                     backoffIndex = min(backoffIndex + 1, backoffLadder.count - 1)
@@ -192,11 +112,6 @@ internal actor PollingFallback {
                 return
             }
 
-            // Translate DTO → JobEvent(s).
-            //
-            // Status values per `GET /api/jobs/{job_id}` (ingest OpenAPI
-            // `JobDetailResponse`): `pending`, `in_progress`, `completed`,
-            // `failed`, `cancelled`.
             switch dto.status.lowercased() {
             case "pending":
                 if !didEmitQueued {
@@ -206,9 +121,6 @@ internal actor PollingFallback {
                 }
 
             case "in_progress":
-                // A4 fix: reset the eventually-consistent success retry
-                // budget if the server reverts from "completed" to
-                // "in_progress" (observed during high-load status oscillation).
                 successWithoutOutputsRetries = 0
                 if !didEmitQueued {
                     continuation.yield(.queued)
@@ -216,8 +128,6 @@ internal actor PollingFallback {
                 }
                 let phase = derivePhase(from: dto)
                 let fraction = deriveFraction(from: dto)
-                // De-duplicate: only emit if phase or fraction changed
-                // relative to the last emission.
                 if phase != lastPhase || fraction != lastFraction {
                     continuation.yield(.progress(fraction: fraction, phase: phase))
                     lastPhase = phase
@@ -229,11 +139,6 @@ internal actor PollingFallback {
                     continuation.yield(.finalizing)
                     didEmitFinalizing = true
                 }
-                // cursor-reviews Fix C: eventually-consistent completion.
-                // If the server returned "completed" but the outputs map
-                // hasn't been populated yet, keep polling instead of
-                // failing. Capped so we don't loop forever on a truly
-                // empty job.
                 if !hasOutputRefs(in: dto) {
                     if successWithoutOutputsRetries < successWithoutOutputsMaxRetries {
                         successWithoutOutputsRetries += 1
@@ -246,7 +151,6 @@ internal actor PollingFallback {
                         }
                         continue
                     }
-                    // Exhausted retries — surface the empty-output failure.
                     SDKLog.pollingEmptyOutputExhausted(jobId: jobId)
                     continuation.yield(.failed(.unknown(underlying: EmptyOutputError())))
                     continuation.finish()
@@ -287,13 +191,9 @@ internal actor PollingFallback {
                 return
 
             default:
-                // Unknown status — conservative: keep polling.
                 break
             }
 
-            // Sleep before the next poll. Active cadence (1s) when
-            // the server is responding successfully; backoff ladder
-            // takes over above on transport errors.
             do {
                 try await clock.sleep(for: activePollInterval)
             } catch {
@@ -303,16 +203,10 @@ internal actor PollingFallback {
             }
         }
 
-        // Task cancelled cooperatively.
         continuation.yield(.cancelled)
         continuation.finish()
     }
 
-    // MARK: - Helpers
-
-    /// Transient errors drive exponential backoff rather than
-    /// terminating the stream. Everything else is surfaced as
-    /// `.failed` so the consumer can route to the error sheet.
     static func isTransient(_ error: ComfyError) -> Bool {
         switch error {
         case .network, .offline, .timeout:
@@ -325,20 +219,11 @@ internal actor PollingFallback {
         }
     }
 
-    /// Pull the current backoff delay from the ladder, clamped to the
-    /// last rung (further failures keep polling at the max interval).
     static func backoffDelay(for index: Int) -> Duration {
         let clamped = min(max(index, 0), backoffLadder.count - 1)
         return backoffLadder[clamped]
     }
 
-    /// Derive a short transport-agnostic phase label from the polled
-    /// DTO. Never a raw Comfy Cloud node name — that would leak the
-    /// workflow graph into the UI.
-    ///
-    /// The HTTP status endpoint (`GET /api/jobs/{job_id}`) does not
-    /// return per-node progress or phase hints — those are WebSocket-
-    /// only. The label is derived from `status` alone.
     static func derivePhase(from dto: JobDetailResponse) -> String {
         switch dto.status.lowercased() {
         case "pending":
@@ -346,7 +231,6 @@ internal actor PollingFallback {
         case "completed":
             return "saving"
         case "failed":
-            // Surface the node type from execution_error if available.
             if let nodeType = dto.executionError?.nodeType, !nodeType.isEmpty {
                 return phaseLabel(forNode: nodeType)
             }
@@ -356,21 +240,10 @@ internal actor PollingFallback {
         }
     }
 
-    /// Compute a clamped `[0, 1]` fraction from the DTO.
-    ///
-    /// The HTTP status endpoint (`GET /api/jobs/{job_id}`) does not
-    /// carry a progress bucket — it returns status and outputs only.
-    /// This helper always returns `0.0` for HTTP-polled DTOs so the
-    /// caller emits a neutral fraction; the WebSocket stream owns
-    /// fine-grained progress reporting.
     static func deriveFraction(from dto: JobDetailResponse) -> Double {
         return 0.0
     }
 
-    /// Whether the DTO carries at least one image / gif / video ref
-    /// in its `outputs` map. Used by the poll loop's `completed` branch
-    /// to distinguish "job done, assets ready" from "server flipped
-    /// status a beat before assets materialized" (cursor-reviews Fix C).
     static func hasOutputRefs(in dto: JobDetailResponse) -> Bool {
         guard let outputs = dto.outputs else { return false }
         for (_, payload) in outputs {
@@ -381,13 +254,6 @@ internal actor PollingFallback {
         return false
     }
 
-    /// Build a `WorkflowOutput` from a terminal `completed` DTO by
-    /// downloading every referenced output via Transport.
-    ///
-    /// Each individual download is wrapped in `withTransientRetry` so a
-    /// stale-connection blip on the just-resumed socket does not surface
-    /// as a permanent failure — the output fetch retries (up to
-    /// `outputFetchMaxAttempts` times) before giving up.
     static func buildOutput(
         from dto: JobDetailResponse,
         transport: Transport,
@@ -444,22 +310,8 @@ internal actor PollingFallback {
         )
     }
 
-    /// Maximum number of attempts for a transient-error retry on output
-    /// fetch. One initial attempt + up to two retries = three total.
     static let outputFetchMaxAttempts: Int = 3
 
-    /// Retry `body` up to `outputFetchMaxAttempts` times when it throws
-    /// a transient `ComfyError`. Non-transient errors and non-`ComfyError`
-    /// throws propagate immediately on the first occurrence. On the last
-    /// attempt the transient error also propagates so the caller can
-    /// surface a `.failed` event — we never loop forever.
-    ///
-    /// The retry is intentionally small (3 attempts, no real sleep) to
-    /// match the "stale-connection blip" scenario: the first call on a
-    /// just-resumed socket often fails with `ECONNRESET`; the second
-    /// typically succeeds once the OS has re-established the underlying
-    /// TCP session. If the network is genuinely down the polling loop
-    /// above already handles prolonged outages with exponential backoff.
     static func withTransientRetry<T>(
         body: () async throws -> T
     ) async throws -> T {
@@ -469,23 +321,17 @@ internal actor PollingFallback {
                 return try await body()
             } catch let error as ComfyError where isTransient(error) {
                 lastError = error
-                // Short pause only after the first failure — gives the
-                // OS a moment to re-establish the socket before retry 2.
                 if attempt == 0 {
-                    try? await Task.sleep(nanoseconds: 250_000_000) // 250 ms
+                    try? await Task.sleep(nanoseconds: 250_000_000)
                 }
                 continue
             } catch {
-                // Non-transient ComfyError or unknown error: surface immediately.
                 throw error
             }
         }
         throw lastError!
     }
 
-    /// Coarse phase label derived from a Comfy Cloud node id. Mirrors
-    /// the `WebSocketSession.phaseLabel(for:)` helper so the two
-    /// transports produce identical phase strings for the same node.
     static func phaseLabel(forNode node: String) -> String {
         let lower = node.lowercased()
         if lower.contains("ksampler") || lower.contains("sampler") {
