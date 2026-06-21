@@ -1,0 +1,52 @@
+name: OpenAPI Contract
+
+# Validates that the endpoints ComfySwiftSDK depends on still exist in the
+# ComfyUI front-facing OpenAPI contract, and warns (non-blocking) on any that
+# the contract marks deprecated. See Scripts/contract/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'Sources/**'
+      - 'Scripts/contract/**'
+      - '.github/workflows/openapi-contract.yml'
+  schedule:
+    # Weekly — catch drift introduced upstream, not by an SDK change.
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+    inputs:
+      openapi_ref:
+        description: ComfyUI git ref to validate against
+        default: master
+
+env:
+  OPENAPI_REPO: Comfy-Org/ComfyUI
+  OPENAPI_REF: ${{ github.event.inputs.openapi_ref || 'master' }}
+
+jobs:
+  contract:
+    name: Endpoint contract check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Fetch ComfyUI OpenAPI spec (${{ env.OPENAPI_REPO }}@${{ env.OPENAPI_REF }})
+        run: |
+          curl -sSfL \
+            "https://raw.githubusercontent.com/${OPENAPI_REPO}/${OPENAPI_REF}/openapi.yaml" \
+            -o "${RUNNER_TEMP}/openapi.yaml"
+
+      - name: Validate SDK endpoints against the contract
+        run: |
+          python3 Scripts/contract/check_contract.py \
+            --spec "${RUNNER_TEMP}/openapi.yaml" \
+            --manifest Scripts/contract/sdk-endpoints.yml

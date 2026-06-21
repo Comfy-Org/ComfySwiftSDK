@@ -1,0 +1,55 @@
+# Endpoints ComfySwiftSDK depends on, validated against the ComfyUI front-facing
+# OpenAPI contract (Comfy-Org/ComfyUI : openapi.yaml).
+#
+# The SDK reaches these under https://cloud.comfy.org, which mounts the ComfyUI
+# API at the same /api paths described by that spec. `Scripts/contract/check_contract.py`
+# asserts each endpoint below still exists in the contract and warns on any that
+# are marked `deprecated: true`.
+#
+# required: true  (default) -> absence from the contract FAILS the check.
+# required: false           -> absence is reported as a non-blocking WARNING
+#                              (used for known legacy endpoints pending migration).
+
+endpoints:
+  - method: POST
+    path: /api/prompt
+    used_by: Transport.submitJob
+    note: Submit a workflow graph for execution.
+
+  - method: GET
+    path: /api/queue
+    used_by: Transport.validateAuth
+    note: Lightweight authenticated round-trip used to validate a credential.
+
+  - method: POST
+    path: /api/queue
+    used_by: Transport.cancelJob
+    note: 'Cancel an in-flight job via {"delete": [prompt_id]}.'
+
+  - method: GET
+    path: /api/view
+    used_by: Transport (output fetch)
+    note: Fetch generated output bytes (image inline / video stream).
+
+  - method: POST
+    path: /api/upload/image
+    used_by: Transport.uploadImage
+    note: Upload image inputs before submitting the prompt.
+
+  - method: GET
+    path: /api/prompt/{prompt_id}
+    used_by: Transport.fetchJobStatus
+    required: false
+    note: >-
+      Legacy per-prompt status read used by the reattach/polling paths. NOT present
+      in the front-facing contract; the documented replacement is GET /api/jobs/{job_id}
+      (GET /api/job/{job_id}/status is itself deprecated). Tracked as a non-blocking
+      warning until the SDK migrates onto the /api/jobs surface.
+
+# Surfaces the SDK uses that the OpenAPI contract does not — and cannot — model.
+# Listed for transparency; the checker ignores them.
+excluded:
+  - surface: "WebSocket /ws"
+    reason: OpenAPI does not model WebSocket streams; the SDK's live event stream lives here.
+  - surface: "OAuth /oauth/authorize, /oauth/token, /.well-known/oauth-authorization-server"
+    reason: Authorization-server endpoints, not part of the resource API contract.
