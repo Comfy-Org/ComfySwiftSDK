@@ -1,0 +1,33 @@
+name: Smoke (live)
+
+# Live integration smoke test against cloud.comfy.org. Deliberately NOT run on
+# push/pull_request: each run submits a real (billable) job and uses the
+# COMFY_API_KEY secret, which on a public repo must only be exposed to
+# main-context runs (manual dispatch + scheduled), never to PR runs.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly ~08:00 UTC — catches a backend contract regression on the
+    # submit → cancel round-trip even when no SDK change triggers it.
+    - cron: '0 8 * * *'
+
+concurrency:
+  group: smoke-live
+  cancel-in-progress: true
+
+jobs:
+  cancel-round-trip:
+    name: Live cancel round-trip
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Run live cancel smoke test
+        env:
+          COMFY_API_KEY: ${{ secrets.COMFY_API_KEY }}
+          RUN_CANCEL_SMOKE: "1"
+        run: swift test --no-parallel --filter cancel_round_trip
