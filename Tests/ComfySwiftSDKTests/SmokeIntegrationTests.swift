@@ -5,17 +5,8 @@ import ComfySwiftSDK
 @Suite("ComfySwiftSDK Smoke Integration")
 struct SmokeIntegrationTests {
 
-    @Test(.disabled("Requires live Comfy Cloud key — run manually with COMFY_API_KEY env var"))
-    func text_to_image_round_trip() async throws {
-        let apiKey = ProcessInfo.processInfo.environment["COMFY_API_KEY"] ?? ""
-        try #require(
-            !apiKey.isEmpty,
-            "Set COMFY_API_KEY in scheme environment to run this test"
-        )
-
-        let client = ComfyCloudClient(apiKey: apiKey)
-
-        let workflow: [String: Any] = [
+    static var smokeWorkflow: [String: Any] {
+        [
             "3": [
                 "class_type": "KSampler",
                 "inputs": [
@@ -68,8 +59,18 @@ struct SmokeIntegrationTests {
                 ]
             ]
         ]
+    }
 
-        let request = WorkflowRequest(workflowJSON: workflow, inputs: [
+    @Test(.disabled("Requires live Comfy Cloud key — run manually with COMFY_API_KEY env var"))
+    func text_to_image_round_trip() async throws {
+        let apiKey = ProcessInfo.processInfo.environment["COMFY_API_KEY"] ?? ""
+        try #require(
+            !apiKey.isEmpty,
+            "Set COMFY_API_KEY in scheme environment to run this test"
+        )
+
+        let client = ComfyCloudClient(apiKey: apiKey)
+        let request = WorkflowRequest(workflowJSON: Self.smokeWorkflow, inputs: [
             .text("a photo of a cat astronaut in space, detailed")
         ])
 
@@ -107,6 +108,34 @@ struct SmokeIntegrationTests {
         #expect(sawProgress, "Smoke run never yielded .progress")
         #expect(sawComplete, "Smoke run never yielded .complete")
         #expect(imageBytes != nil, "Smoke run completed but had no image bytes")
+    }
+
+    @Test(.enabled(
+        if: ProcessInfo.processInfo.environment["RUN_CANCEL_SMOKE"] == "1",
+        "Live cancel round-trip — run with RUN_CANCEL_SMOKE=1 and COMFY_API_KEY set"
+    ))
+    func cancel_round_trip() async throws {
+        let apiKey = ProcessInfo.processInfo.environment["COMFY_API_KEY"] ?? ""
+        try #require(!apiKey.isEmpty, "Set COMFY_API_KEY to run this test")
+
+        let client = ComfyCloudClient(apiKey: apiKey)
+        let handle = try await client.submit(WorkflowRequest(workflowJSON: Self.smokeWorkflow))
+
+        try await Task.sleep(for: .milliseconds(400))
+
+        var request = URLRequest(
+            url: URL(string: "https://cloud.comfy.org/api/jobs/\(handle.id)/cancel")!
+        )
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let http = try #require(response as? HTTPURLResponse)
+        let bodyText = String(data: data, encoding: .utf8) ?? ""
+
+        #expect(http.statusCode == 200, "cancel returned HTTP \(http.statusCode): \(bodyText)")
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["cancelled"] as? Bool == true, "expected {cancelled: true}, got \(bodyText)")
     }
 
     @Test(.disabled("Requires live Comfy Cloud key, seeded comfy-ios client (Story 8.1 gate), and >15min session"))

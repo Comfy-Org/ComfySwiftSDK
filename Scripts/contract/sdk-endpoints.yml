@@ -22,12 +22,9 @@ endpoints:
     note: Lightweight authenticated round-trip used to validate a credential.
 
   - method: POST
-    path: /api/queue
+    path: /api/jobs/{job_id}/cancel
     used_by: Transport.cancelJob
-    note: >-
-      Cancel an in-flight job via {"delete": [prompt_id]}. Marked deprecated in the
-      contract; the documented replacement is POST /api/jobs/{job_id}/cancel. Non-blocking
-      warning until the cancel migration (issue #12) lands.
+    note: 'Best-effort cancel of an in-flight job (prompt_id == job_id). Response { "cancelled": boolean }.'
 
   - method: GET
     path: /api/view
