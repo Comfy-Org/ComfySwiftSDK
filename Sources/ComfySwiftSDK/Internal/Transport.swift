@@ -285,15 +285,10 @@ internal actor Transport {
     }
 
     internal func cancelJob(id: String) async {
-        let url = baseURL.appendingPathComponent("api/queue")
+        let url = baseURL.appendingPathComponent("api/jobs/\(id)/cancel")
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         _ = try? await applyAuth(to: &urlRequest)
-
-        let body: [String: Any] = ["delete": [id]]
-        urlRequest.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
         _ = try? await session.data(for: urlRequest)
     }
 
