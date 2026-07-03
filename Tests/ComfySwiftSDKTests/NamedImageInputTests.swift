@@ -156,8 +156,8 @@ struct NamedImageInputTests {
         #expect(sampler?["image"] == nil)
     }
 
-    @Test("namedImage with an unknown nodeId submits successfully and touches nothing")
-    func namedImageWithMissingNodeIsNoOp() async throws {
+    @Test("namedImage with an unknown nodeId fails fast rather than dropping the binding")
+    func namedImageWithMissingNodeThrows() async throws {
         let harness = Harness()
         harness.install()
         defer { TestURLProtocol.uninstall() }
@@ -169,14 +169,79 @@ struct NamedImageInputTests {
             inputs: [imageInput("999")]
         )
 
-        let handle = try await makeTransport().submitJob(request)
+        // An explicit but unresolvable target must surface an error, not silently submit the
+        // job against the original image.
+        await #expect(throws: ComfyError.self) {
+            _ = try await self.makeTransport().submitJob(request)
+        }
+        // No prompt was submitted; the unrelated node was never touched.
+        #expect(harness.submittedWorkflow == nil)
+    }
 
-        // Submit still succeeded (upload happened, patch was a no-op).
-        #expect(handle.id == "job-123")
-        #expect(harness.uploadCount == 1)
-        // The unrelated node is untouched.
-        #expect(imageName(in: harness.submittedWorkflow, nodeId: "7") == "original.png")
-        // The missing node was not conjured into existence.
-        #expect(harness.submittedWorkflow?["999"] == nil)
+    @Test("namedImage targeting a non-image node (no image input) fails fast")
+    func namedImageTargetingNonImageNodeThrows() async throws {
+        let harness = Harness()
+        harness.install()
+        defer { TestURLProtocol.uninstall() }
+
+        let request = WorkflowRequest(
+            workflowJSON: [
+                "3": ["class_type": "KSampler", "inputs": ["seed": 0]]
+            ],
+            inputs: [imageInput("3")]
+        )
+
+        // A node with an `inputs` dict but no `image` key must not get a bogus `image` injected.
+        await #expect(throws: ComfyError.self) {
+            _ = try await self.makeTransport().submitJob(request)
+        }
+        #expect(harness.submittedWorkflow == nil)
+    }
+
+    @Test("two namedImage inputs on the same node are rejected (silent-clobber guard)")
+    func duplicateNamedImageNodeThrows() async throws {
+        let harness = Harness()
+        harness.install()
+        defer { TestURLProtocol.uninstall() }
+
+        let request = WorkflowRequest(
+            workflowJSON: [
+                "10": ["class_type": "LoadImage", "inputs": ["image": ""]]
+            ],
+            inputs: [imageInput("10"), imageInput("10")]
+        )
+
+        await #expect(throws: ComfyError.self) {
+            _ = try await self.makeTransport().submitJob(request)
+        }
+        // Rejected before any upload — no wasted work, nothing submitted.
+        #expect(harness.uploadCount == 0)
+        #expect(harness.submittedWorkflow == nil)
+    }
+
+    @Test("namedImage wins over a blanket .image patch on the same LoadImage node")
+    func namedImageBeatsBlanketPatchOnSharedNode() async throws {
+        let harness = Harness()
+        harness.install()
+        defer { TestURLProtocol.uninstall() }
+
+        // Input order puts .image last; the fix must still let the node-targeted binding win,
+        // because patch order (targeted last) — not input order — decides the final image.
+        let request = WorkflowRequest(
+            workflowJSON: [
+                "10": ["class_type": "LoadImage", "inputs": ["image": ""]],
+                "20": ["class_type": "LoadImage", "inputs": ["image": ""]]
+            ],
+            inputs: [imageInput("10"), .image(Data([0xAA]), mimeType: "image/png")]
+        )
+
+        _ = try await makeTransport().submitJob(request)
+
+        let workflow = harness.submittedWorkflow
+        // Blanket .image is uploaded/applied first (uploaded-1.png → every LoadImage), then the
+        // node-targeted upload (uploaded-2.png) overwrites node 10. Node 10 keeps the named
+        // binding; node 20 keeps the blanket one.
+        #expect(imageName(in: workflow, nodeId: "10") == "uploaded-2.png")
+        #expect(imageName(in: workflow, nodeId: "20") == "uploaded-1.png")
     }
 }

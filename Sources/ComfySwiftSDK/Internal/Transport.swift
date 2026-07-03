@@ -177,22 +177,35 @@ internal actor Transport {
         guard imageInputCount <= 1 else {
             throw ComfyError.serverRejected(reason: .other("multiple_image_inputs_unsupported"))
         }
-        var workflowJSON = request.workflowJSON
+
+        // Node-targeted inputs must map 1:1 to distinct nodes. Two `.namedImage` inputs on the
+        // same node would silently clobber each other (last write wins) — the same failure class
+        // the `.image` guard above prevents — so reject the request up front.
+        var targetedNodeIds = Set<String>()
         for input in request.inputs {
-            switch input {
-            case .text, .seed:
-                continue
-            case .image(let imageData, let mimeType):
-                let uploadedName = try await uploadImage(imageData, mimeType: mimeType)
-                workflowJSON = Self.patchLoadImageNodes(workflowJSON, uploadedFilename: uploadedName)
-            case .namedImage(let imageData, let mimeType, let nodeId):
-                let uploadedName = try await uploadImage(imageData, mimeType: mimeType)
-                workflowJSON = Self.patchLoadImageNode(
-                    workflowJSON,
-                    nodeId: nodeId,
-                    uploadedFilename: uploadedName
-                )
+            guard case .namedImage(_, _, let nodeId) = input else { continue }
+            guard targetedNodeIds.insert(nodeId).inserted else {
+                throw ComfyError.serverRejected(reason: .other("duplicate_named_image_node"))
             }
+        }
+
+        var workflowJSON = request.workflowJSON
+        // Apply blanket `.image` patches BEFORE node-targeted `.namedImage` patches. Both can touch
+        // the same LoadImage node; the caller's explicit `nodeId` binding must win, so the targeted
+        // pass has to run last (patch order, not input order, decides the final image).
+        for input in request.inputs {
+            guard case .image(let imageData, let mimeType) = input else { continue }
+            let uploadedName = try await uploadImage(imageData, mimeType: mimeType)
+            workflowJSON = Self.patchLoadImageNodes(workflowJSON, uploadedFilename: uploadedName)
+        }
+        for input in request.inputs {
+            guard case .namedImage(let imageData, let mimeType, let nodeId) = input else { continue }
+            let uploadedName = try await uploadImage(imageData, mimeType: mimeType)
+            workflowJSON = try Self.patchLoadImageNode(
+                workflowJSON,
+                nodeId: nodeId,
+                uploadedFilename: uploadedName
+            )
         }
         let patchedJSON = workflowJSON
         return try await withAuthRetry {
@@ -466,16 +479,26 @@ internal actor Transport {
     /// Rewrites ONLY the given node's `inputs["image"]` to the uploaded name. Unlike
     /// `patchLoadImageNodes` this targets a single node by id regardless of its `class_type`
     /// (so `LoadImage` and `LoadImageMask` are both supported — the caller specified the node).
-    /// No-ops if `nodeId` is absent or the node has no `inputs` dict, matching the tolerant
-    /// behavior of the blanket patcher (never throws).
+    ///
+    /// This is an explicit-target API: the caller has already uploaded the image, so a silent
+    /// no-op would submit the job with the wrong/original image and no error. A typo'd or stale
+    /// `nodeId` (absent node, or a node with no `image` input such as a `KSampler`) therefore
+    /// throws rather than dropping the binding or injecting a bogus `image` key. Guarding on the
+    /// presence of an existing `image` input keeps both `LoadImage` and `LoadImageMask` valid
+    /// targets while rejecting non-image nodes.
     static func patchLoadImageNode(
         _ workflow: [String: Any],
         nodeId: String,
         uploadedFilename: String
-    ) -> [String: Any] {
-        var patched = workflow
+    ) throws -> [String: Any] {
         guard var node = workflow[nodeId] as? [String: Any],
-              var inputs = node["inputs"] as? [String: Any] else { return patched }
+              var inputs = node["inputs"] as? [String: Any] else {
+            throw ComfyError.serverRejected(reason: .other("named_image_node_not_found"))
+        }
+        guard inputs["image"] != nil else {
+            throw ComfyError.serverRejected(reason: .other("named_image_node_not_an_image_loader"))
+        }
+        var patched = workflow
         inputs["image"] = uploadedFilename
         node["inputs"] = inputs
         patched[nodeId] = node
