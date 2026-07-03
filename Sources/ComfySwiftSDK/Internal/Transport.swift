@@ -185,6 +185,13 @@ internal actor Transport {
             case .image(let imageData, let mimeType):
                 let uploadedName = try await uploadImage(imageData, mimeType: mimeType)
                 workflowJSON = Self.patchLoadImageNodes(workflowJSON, uploadedFilename: uploadedName)
+            case .namedImage(let imageData, let mimeType, let nodeId):
+                let uploadedName = try await uploadImage(imageData, mimeType: mimeType)
+                workflowJSON = Self.patchLoadImageNode(
+                    workflowJSON,
+                    nodeId: nodeId,
+                    uploadedFilename: uploadedName
+                )
             }
         }
         let patchedJSON = workflowJSON
@@ -453,6 +460,25 @@ internal actor Transport {
             node["inputs"] = inputs
             patched[nodeId] = node
         }
+        return patched
+    }
+
+    /// Rewrites ONLY the given node's `inputs["image"]` to the uploaded name. Unlike
+    /// `patchLoadImageNodes` this targets a single node by id regardless of its `class_type`
+    /// (so `LoadImage` and `LoadImageMask` are both supported — the caller specified the node).
+    /// No-ops if `nodeId` is absent or the node has no `inputs` dict, matching the tolerant
+    /// behavior of the blanket patcher (never throws).
+    static func patchLoadImageNode(
+        _ workflow: [String: Any],
+        nodeId: String,
+        uploadedFilename: String
+    ) -> [String: Any] {
+        var patched = workflow
+        guard var node = workflow[nodeId] as? [String: Any],
+              var inputs = node["inputs"] as? [String: Any] else { return patched }
+        inputs["image"] = uploadedFilename
+        node["inputs"] = inputs
+        patched[nodeId] = node
         return patched
     }
 
