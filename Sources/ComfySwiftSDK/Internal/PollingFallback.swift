@@ -232,7 +232,7 @@ internal actor PollingFallback {
             return "saving"
         case "failed":
             if let nodeType = dto.executionError?.nodeType, !nodeType.isEmpty {
-                return phaseLabel(forNode: nodeType)
+                return PhaseLabel.forNode(nodeType)
             }
             return "executing"
         default:
@@ -330,25 +330,5 @@ internal actor PollingFallback {
             }
         }
         throw lastError!
-    }
-
-    static func phaseLabel(forNode node: String) -> String {
-        let lower = node.lowercased()
-        if lower.contains("ksampler") || lower.contains("sampler") {
-            return "sampling"
-        }
-        if lower.contains("vae") {
-            return "vae_decode"
-        }
-        if lower.contains("clip") || lower.contains("encode") {
-            return "encoding"
-        }
-        if lower.contains("save") || lower.contains("preview") {
-            return "saving"
-        }
-        if lower == "queued" {
-            return "queued"
-        }
-        return "executing"
     }
 }
