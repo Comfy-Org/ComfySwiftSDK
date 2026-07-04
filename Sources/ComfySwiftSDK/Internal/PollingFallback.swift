@@ -301,27 +301,38 @@ internal actor PollingFallback {
         jobId: String
     ) async throws -> WorkflowOutput {
         var files: [WorkflowOutput.OutputFile] = []
-        for ref in imageRefs {
-            let (data, mime) = try await withTransientRetry {
-                try await transport.downloadView(
-                    filename: ref.filename,
-                    subfolder: ref.subfolder,
-                    type: ref.type
-                )
+        do {
+            for ref in imageRefs {
+                let (data, mime) = try await withTransientRetry {
+                    try await transport.downloadView(
+                        filename: ref.filename,
+                        subfolder: ref.subfolder,
+                        type: ref.type
+                    )
+                }
+                files.append(.image(data, mimeType: mime))
             }
-            files.append(.image(data, mimeType: mime))
-        }
-        for ref in videoRefs {
-            let ext = (ref.filename as NSString).pathExtension
-            let url = try await withTransientRetry {
-                try await transport.downloadViewToTempFile(
-                    filename: ref.filename,
-                    subfolder: ref.subfolder,
-                    type: ref.type,
-                    suggestedExtension: ext.isEmpty ? "mp4" : ext
-                )
+            for ref in videoRefs {
+                let ext = (ref.filename as NSString).pathExtension
+                let url = try await withTransientRetry {
+                    try await transport.downloadViewToTempFile(
+                        filename: ref.filename,
+                        subfolder: ref.subfolder,
+                        type: ref.type,
+                        suggestedExtension: ext.isEmpty ? "mp4" : ext
+                    )
+                }
+                files.append(.video(url: url))
             }
-            files.append(.video(url: url))
+        } catch {
+            // A later download failing leaves the temp files from earlier video
+            // refs orphaned in the caches directory — the caller discards this
+            // partial result, so nothing else will ever clean them up. Delete any
+            // temp files already materialized before rethrowing.
+            for case let .video(url) in files {
+                try? FileManager.default.removeItem(at: url)
+            }
+            throw error
         }
 
         let duration = Date().timeIntervalSince(startTime)
