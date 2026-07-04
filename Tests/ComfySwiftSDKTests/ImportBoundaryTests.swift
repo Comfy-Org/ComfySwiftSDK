@@ -36,13 +36,23 @@
 //      - `@testable import SwiftUI`              ← would bypass
 //      - `import struct Foundation.Date`         ← would false-positive
 //      - `import class Foundation.NSDate`        ← would false-positive
-//    `parseImportModuleName(from:)` strips a leading import attribute
-//    (if any), skips the optional `struct`/`class`/`func`/`enum`/
-//    `protocol`/`var`/`let`/`typealias`/`actor` kind keyword, and
-//    extracts the *top-level* module name (e.g. `Foundation` from
-//    `Foundation.Date`). The denylist and allowlist checks then both
-//    compare module names — never raw line text — so the canonical
-//    forms and the attributed/scoped forms behave identically.
+//      - `@preconcurrency @_exported import SwiftUI` (stacked attrs)
+//      - `import struct Foundation.Date; import SwiftUI` (`;`-joined)
+//    The scan runs in two steps. `strippedForScanning(_:)` first lexes
+//    the whole file, blanking comment and string-literal *content*
+//    while preserving newlines — so an `import` hidden inside a `/* */`
+//    block comment or a `"""..."""` string cannot cause a spurious
+//    failure, and a real `import` sharing a line with a comment is
+//    still seen. `importModules(in:)` then splits each line on `;` so a
+//    second statement after a semicolon is not dropped, and hands each
+//    statement to `parseImportModuleName(from:)`, which strips any
+//    stacked leading `@`-attributes, skips the optional `struct`/
+//    `class`/`func`/`enum`/`protocol`/`var`/`let`/`typealias`/`actor`
+//    kind keyword, and extracts the *top-level* module name (e.g.
+//    `Foundation` from `Foundation.Date`). The denylist and allowlist
+//    checks then both compare module names — never raw line text — so
+//    the canonical forms and the attributed/scoped forms behave
+//    identically.
 //
 //  Why this enforcement is load-bearing:
 //    The SDK boundary discipline says the SDK never imports SwiftUI,
@@ -191,25 +201,35 @@ struct ImportBoundaryTests {
     /// checks compare module names, so the same allow/deny decision
     /// applies regardless of which scoped form the source uses.
     static func parseImportModuleName(from line: String) -> String? {
-        var working = line.trimmingCharacters(in: .whitespaces)
+        // `.whitespacesAndNewlines` (not `.whitespaces`) so a trailing
+        // carriage return on a CRLF-checked-out file is stripped too;
+        // otherwise `import Foundation;\r` would keep the `\r` and parse
+        // as the module `Foundation;`.
+        var working = line.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Strip a trailing line comment so `import Foo // note` works.
+        // (Callers that scan whole files pre-strip comments via
+        // `strippedForScanning`; this keeps the parser correct when
+        // called on a raw single line too.)
         if let commentRange = working.range(of: "//") {
             working = String(working[..<commentRange.lowerBound])
-                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        // Strip a leading import attribute (e.g. `@_implementationOnly`,
-        // `@_exported`, `@preconcurrency`, `@testable`). The attribute
-        // and the `import` keyword may be separated by any whitespace.
-        if working.hasPrefix("@") {
+        // Strip leading import attributes (e.g. `@_implementationOnly`,
+        // `@_exported`, `@preconcurrency`, `@testable`). Attributes may
+        // stack — `@preconcurrency @_exported import SwiftUI` is valid —
+        // so loop until no leading `@`-attribute remains, otherwise a
+        // stacked-attribute import would slip past the `hasPrefix("import")`
+        // guard below and evade both the denylist and allowlist scans.
+        while working.hasPrefix("@") {
             // Find the first whitespace after the attribute and skip
             // past it.
             guard let firstSpace = working.firstIndex(where: { $0.isWhitespace }) else {
                 return nil
             }
             working = String(working[working.index(after: firstSpace)...])
-                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         guard working.hasPrefix("import") else { return nil }
@@ -224,11 +244,13 @@ struct ImportBoundaryTests {
         }
 
         var rest = String(working[afterImport...])
-            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Strip a trailing semicolon, if any.
+        // Strip a trailing semicolon, if any. (Whole-file callers split
+        // statements on `;` first, but a single line handed straight in
+        // may still carry one.)
         if rest.hasSuffix(";") {
-            rest = String(rest.dropLast()).trimmingCharacters(in: .whitespaces)
+            rest = String(rest.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         // Tokenize on whitespace. The first token may be a kind
@@ -257,6 +279,117 @@ struct ImportBoundaryTests {
         return topLevel
     }
 
+    /// Return a copy of `source` with every comment and string-literal
+    /// *content* replaced by spaces, while preserving every newline so
+    /// 1-based line numbers stay aligned with the original file.
+    ///
+    /// A line-oriented `//`-only strip is not enough: an `import` can
+    /// hide inside a block comment or a string literal (a false
+    /// positive that would spuriously fail `swift test`), and a real
+    /// `import` can share a line with a block comment
+    /// (`/* note */ import Foundation` — a false negative). Running the
+    /// scan over this lexed copy closes both blind spots. Handles `//`
+    /// line comments, nested `/* ... */` block comments (Swift allows
+    /// nesting), `"..."` strings (respecting `\` escapes), and
+    /// `"""..."""` multiline strings. Raw string literals (`#"..."#`)
+    /// are not special-cased — an `import` buried in one is a
+    /// pathological form the SDK does not use.
+    static func strippedForScanning(_ source: String) -> String {
+        enum State { case code, lineComment, blockComment, string, multiString }
+        var state: State = .code
+        var blockDepth = 0
+        let chars = Array(source)
+        var output = String()
+        output.reserveCapacity(chars.count)
+        var i = 0
+        func at(_ k: Int) -> Character? { k < chars.count ? chars[k] : nil }
+
+        while i < chars.count {
+            let c = chars[i]
+            switch state {
+            case .code:
+                if c == "/", at(i + 1) == "/" {
+                    state = .lineComment; output += "  "; i += 2
+                } else if c == "/", at(i + 1) == "*" {
+                    state = .blockComment; blockDepth = 1; output += "  "; i += 2
+                } else if c == "\"", at(i + 1) == "\"", at(i + 2) == "\"" {
+                    state = .multiString; output += "   "; i += 3
+                } else if c == "\"" {
+                    state = .string; output += " "; i += 1
+                } else {
+                    output.append(c); i += 1
+                }
+            case .lineComment:
+                if c == "\n" { state = .code; output.append("\n") } else { output.append(" ") }
+                i += 1
+            case .blockComment:
+                if c == "/", at(i + 1) == "*" {
+                    blockDepth += 1; output += "  "; i += 2
+                } else if c == "*", at(i + 1) == "/" {
+                    blockDepth -= 1; output += "  "; i += 2
+                    if blockDepth == 0 { state = .code }
+                } else {
+                    output.append(c == "\n" ? "\n" : " "); i += 1
+                }
+            case .string:
+                if c == "\\" {
+                    // Escaped char — consume both so a `\"` does not
+                    // close the string. Preserve a newline if one
+                    // follows, to keep line numbers aligned.
+                    output.append(" "); i += 1
+                    if i < chars.count { output.append(chars[i] == "\n" ? "\n" : " "); i += 1 }
+                } else if c == "\"" {
+                    state = .code; output.append(" "); i += 1
+                } else if c == "\n" {
+                    // Unterminated single-line string — bail back to code
+                    // rather than swallowing the rest of the file.
+                    state = .code; output.append("\n"); i += 1
+                } else {
+                    output.append(" "); i += 1
+                }
+            case .multiString:
+                if c == "\\" {
+                    output.append(" "); i += 1
+                    if i < chars.count { output.append(chars[i] == "\n" ? "\n" : " "); i += 1 }
+                } else if c == "\"", at(i + 1) == "\"", at(i + 2) == "\"" {
+                    state = .code; output += "   "; i += 3
+                } else {
+                    output.append(c == "\n" ? "\n" : " "); i += 1
+                }
+            }
+        }
+        return output
+    }
+
+    /// Every `import` found in `contents`, as `(1-based line, top-level
+    /// module name, original line text)`. Comments and string literals
+    /// are stripped first (see `strippedForScanning`) so imports inside
+    /// them are ignored, and each physical line is split on `;` so a
+    /// second statement after a semicolon
+    /// (`import struct Foundation.Date; import SwiftUI`) is parsed too
+    /// rather than silently dropped. The reported line text is the
+    /// original (un-lexed) line so failure messages show the real
+    /// source.
+    static func importModules(
+        in contents: String
+    ) -> [(line: Int, module: String, text: String)] {
+        let cleanedLines = strippedForScanning(contents)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        let originalLines = contents
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        var result: [(line: Int, module: String, text: String)] = []
+        for (index, cleaned) in cleanedLines.enumerated() {
+            for statement in cleaned.split(separator: ";", omittingEmptySubsequences: false) {
+                if let module = parseImportModuleName(from: String(statement)) {
+                    let original = index < originalLines.count
+                        ? String(originalLines[index]) : String(cleaned)
+                    result.append((line: index + 1, module: module, text: original))
+                }
+            }
+        }
+        return result
+    }
+
     /// Scan every line of every SDK source file for an `import` of
     /// `moduleName`. Returns the first matching `(file, line number,
     /// line text)` tuple, or nil if no violation is found. Comparison
@@ -268,12 +401,8 @@ struct ImportBoundaryTests {
         in files: [(path: String, contents: String)]
     ) -> (file: String, line: Int, text: String)? {
         for file in files {
-            let lines = file.contents.split(separator: "\n", omittingEmptySubsequences: false)
-            for (index, line) in lines.enumerated() {
-                if let parsed = Self.parseImportModuleName(from: String(line)),
-                   parsed == moduleName {
-                    return (file: file.path, line: index + 1, text: String(line))
-                }
+            for imp in Self.importModules(in: file.contents) where imp.module == moduleName {
+                return (file: file.path, line: imp.line, text: imp.text)
             }
         }
         return nil
@@ -323,14 +452,10 @@ struct ImportBoundaryTests {
     @Test func sdk_sources_only_import_allowlist() throws {
         let files = try loadAllSDKSourceFiles()
         for file in files {
-            let lines = file.contents.split(separator: "\n", omittingEmptySubsequences: false)
-            for (index, line) in lines.enumerated() {
-                guard let module = Self.parseImportModuleName(from: String(line)) else {
-                    continue
-                }
+            for imp in Self.importModules(in: file.contents) {
                 #expect(
-                    Self.allowedSDKImports.contains(module),
-                    "SDK boundary violation (allowlist): \(file.path) line \(index + 1): imports '\(module)' but only \(Self.allowedSDKImports.sorted()) are permitted in SDK sources. Original line: '\(line)'"
+                    Self.allowedSDKImports.contains(imp.module),
+                    "SDK boundary violation (allowlist): \(file.path) line \(imp.line): imports '\(imp.module)' but only \(Self.allowedSDKImports.sorted()) are permitted in SDK sources. Original line: '\(imp.text)'"
                 )
             }
         }
@@ -346,5 +471,62 @@ struct ImportBoundaryTests {
             !files.isEmpty,
             "Boundary scanner found zero SDK source files — path-climbing in loadAllSDKSourceFiles() is broken."
         )
+    }
+
+    // MARK: - Parser edge cases
+    //
+    // These lock in the parsing corners that a line-oriented `==`
+    // check (or an earlier draft of this parser) would miss. Each is a
+    // real evasion or false-positive vector for the boundary scan.
+
+    @Test func parses_plain_and_scoped_and_attributed_imports() {
+        #expect(Self.importModules(in: "import Foundation\n").map(\.module) == ["Foundation"])
+        #expect(Self.importModules(in: "import struct Foundation.Date\n").map(\.module) == ["Foundation"])
+        #expect(Self.importModules(in: "@testable import SwiftUI\n").map(\.module) == ["SwiftUI"])
+        #expect(Self.importModules(in: "let importance = 1\n").map(\.module).isEmpty)
+    }
+
+    /// Stacked import attributes must not slip past the scan (was a
+    /// single-`@`-strip bug: `@preconcurrency @_exported import SwiftUI`
+    /// left `@_exported import SwiftUI` and parsed to nil).
+    @Test func parses_stacked_import_attributes() {
+        let mods = Self.importModules(in: "@preconcurrency @_exported import SwiftUI\n").map(\.module)
+        #expect(mods == ["SwiftUI"])
+    }
+
+    /// A second statement after `;` must still be parsed, not dropped.
+    @Test func parses_second_statement_after_semicolon() {
+        let joined = Self.importModules(in: "import struct Foundation.Date; import SwiftUI\n").map(\.module).sorted()
+        #expect(joined == ["Foundation", "SwiftUI"])
+        let afterCode = Self.importModules(in: "let x = 1; import SwiftUI\n").map(\.module)
+        #expect(afterCode == ["SwiftUI"])
+    }
+
+    /// An `import` inside a block comment or string literal is not code
+    /// and must not trip the scan (false positive); a real `import`
+    /// sharing a line with a comment must still be seen (false negative).
+    @Test func ignores_imports_in_comments_and_strings() {
+        #expect(Self.importModules(in: "/*\nimport SwiftUI\n*/\nimport Foundation\n").map(\.module) == ["Foundation"])
+        #expect(Self.importModules(in: "/* note */ import SwiftUI\n").map(\.module) == ["SwiftUI"])
+        #expect(Self.importModules(in: "import/*x*/SwiftUI\n").map(\.module) == ["SwiftUI"])
+        #expect(Self.importModules(in: "let s = \"import SwiftUI\"\n").map(\.module).isEmpty)
+        #expect(Self.importModules(in: "let s = \"\"\"\nimport SwiftUI\n\"\"\"\n").map(\.module).isEmpty)
+        // Nested block comment: the inner `*/` must not end the outer.
+        #expect(Self.importModules(in: "/* a /* b */ import SwiftUI */\nimport Foundation\n").map(\.module) == ["Foundation"])
+    }
+
+    /// CRLF line endings must not leave a `\r` glued to the module name
+    /// (was: `import Foundation;\r` parsed as module `Foundation;`).
+    @Test func handles_crlf_line_endings() {
+        #expect(Self.importModules(in: "import Foundation;\r\n").map(\.module) == ["Foundation"])
+    }
+
+    /// Reported line numbers must survive multi-line comment/string
+    /// stripping so failure messages point at the real offending line.
+    @Test func preserves_line_numbers_across_block_comments() {
+        let src = "/*\n multi\n line\n */\nimport SwiftUI\n"
+        let imp = Self.importModules(in: src).first
+        #expect(imp?.module == "SwiftUI")
+        #expect(imp?.line == 5)
     }
 }
