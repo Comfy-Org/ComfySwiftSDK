@@ -278,6 +278,28 @@ internal actor PollingFallback {
             throw ComfyError.unknown(underlying: EmptyOutputError())
         }
 
+        return try await assembleOutput(
+            imageRefs: imageRefs,
+            videoRefs: videoRefs,
+            transport: transport,
+            startTime: startTime,
+            jobId: jobId
+        )
+    }
+
+    /// Downloads the collected output references and assembles the final
+    /// `WorkflowOutput`. Shared by the WebSocket success path and the polling
+    /// fallback — the two callers collect the refs differently (incremental
+    /// `executed`-frame buffering vs. `dto.outputs` extraction) and handle the
+    /// empty-refs case on their own, but the download-and-assemble tail is
+    /// identical.
+    static func assembleOutput(
+        imageRefs: [OutputFileRef],
+        videoRefs: [OutputFileRef],
+        transport: Transport,
+        startTime: Date,
+        jobId: String
+    ) async throws -> WorkflowOutput {
         var files: [WorkflowOutput.OutputFile] = []
         for ref in imageRefs {
             let (data, mime) = try await withTransientRetry {
