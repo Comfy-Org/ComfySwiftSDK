@@ -357,7 +357,7 @@ internal actor PollingFallback {
     ) async throws -> T {
         try await withTransientRetry(
             delays: outputFetchRetryDelays,
-            sleep: { duration in _ = try? await Task.sleep(for: duration) },
+            sleep: { duration in try await Task.sleep(for: duration) },
             body: body
         )
     }
