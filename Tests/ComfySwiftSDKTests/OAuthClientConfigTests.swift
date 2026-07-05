@@ -81,13 +81,28 @@ struct OAuthClientConfigTests {
         #expect(params["scope"] == OAuthClientConfig.comfyIOS.scopes.joined(separator: " "))
     }
 
+    @Test("the returned request carries the config it was built with, for the exchange/refresh step")
+    func requestCarriesItsConfig() {
+        let custom = OAuthClientConfig(
+            clientId: "acme-app",
+            redirectScheme: "com.acme.app",
+            redirectURI: "com.acme.app://oauth-callback",
+            scopes: ["acme:read"]
+        )
+        let req = ComfyCloudClient.buildAuthorizationRequest(config: custom)
+        #expect(req.config.clientId == "acme-app")
+        #expect(req.config.redirectURI == "com.acme.app://oauth-callback")
+        #expect(ComfyCloudClient.buildAuthorizationRequest().config.clientId == "comfy-ios")
+    }
+
     // MARK: - extractCode(fromCallback:) matrix
 
     private func request(state: String) -> OAuthAuthorizationRequest {
         OAuthAuthorizationRequest(
             authorizationURL: URL(string: "https://cloud.comfy.org/oauth/authorize")!,
             state: state,
-            codeVerifier: "verifier"
+            codeVerifier: "verifier",
+            config: .comfyIOS
         )
     }
 
@@ -131,16 +146,18 @@ struct OAuthClientConfigTests {
         }
     }
 
-    @Test("extractCode throws .authCancelled when state is missing")
+    @Test("extractCode throws .authStateMismatch when a code arrives with no state")
     func extractCodeMissingState() {
+        // A present code we can't state-verify is a CSRF/misconfiguration signal, not a user
+        // cancellation, so an absent `state` fails closed the same way a mismatched one does.
         let req = request(state: "STATE-123")
         let url = URL(string: "org.comfy.ios://oauth-callback?code=auth-code-xyz")!
         do {
             _ = try req.extractCode(fromCallback: url)
-            Issue.record("Expected .authCancelled, got success")
-        } catch ComfyError.authCancelled {
+            Issue.record("Expected .authStateMismatch, got success")
+        } catch ComfyError.authStateMismatch {
         } catch {
-            Issue.record("Expected .authCancelled, got \(error)")
+            Issue.record("Expected .authStateMismatch, got \(error)")
         }
     }
 

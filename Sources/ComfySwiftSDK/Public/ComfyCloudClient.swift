@@ -27,14 +27,23 @@ public final class ComfyCloudClient: Sendable {
 
     /// Creates a client authenticated with the given credential.
     ///
-    /// - Parameter credential: How the client authenticates each request — an API key or an
-    ///   OAuth token provider. See ``ComfyCredential``.
-    public init(credential: ComfyCredential) {
+    /// - Parameters:
+    ///   - credential: How the client authenticates each request — an API key or an OAuth token
+    ///     provider. See ``ComfyCredential``.
+    ///   - config: The OAuth client config the tokens were minted under. In
+    ///     ``ComfyCredential/oauthRefreshable(tokenProvider:refreshProvider:tokenStore:expiryProvider:)``
+    ///     mode the SDK-owned refresh grant sends this config's ``OAuthClientConfig/clientId``, which
+    ///     per RFC 6749 §6 must match the client the token was issued to. Pass the same config used
+    ///     with ``buildAuthorizationRequest(config:)`` / ``exchangeAuthorizationCode(_:codeVerifier:config:)``
+    ///     (available as ``OAuthAuthorizationRequest/config``). Defaults to ``OAuthClientConfig/comfyIOS``;
+    ///     ignored for non-refreshable credentials.
+    public init(credential: ComfyCredential, config: OAuthClientConfig = .comfyIOS) {
         let session = URLSession(configuration: ComfySDKInfo.sessionConfiguration())
         let transport = Transport(
             session: session,
             baseURL: Self.baseURL,
-            credential: credential
+            credential: credential,
+            oauthConfig: config
         )
         self.transport = transport
         self.webSocketSession = WebSocketSession(
@@ -208,7 +217,8 @@ public final class ComfyCloudClient: Sendable {
         return OAuthAuthorizationRequest(
             authorizationURL: url,
             state: state,
-            codeVerifier: codeVerifier
+            codeVerifier: codeVerifier,
+            config: config
         )
     }
 
@@ -216,14 +226,16 @@ public final class ComfyCloudClient: Sendable {
     ///
     /// Call after the web-session callback returns a code, passing the `codeVerifier` from the
     /// matching ``buildAuthorizationRequest(config:)``. Persist the returned tokens (for example,
-    /// in the Keychain) and construct an OAuth-mode client with ``ComfyCredential``.
+    /// in the Keychain) and construct an OAuth-mode client with ``ComfyCredential`` — passing the
+    /// same config to ``init(credential:config:)`` so the SDK-owned refresh grant matches.
     ///
     /// - Parameters:
     ///   - code: The authorization code from the callback URL.
     ///   - codeVerifier: The PKCE verifier from the originating
     ///     ``buildAuthorizationRequest(config:)``.
     ///   - config: The OAuth client parameters (client id, redirect URI) to redeem against. Must
-    ///     match the config the authorization request was built with. Defaults to
+    ///     match the config the authorization request was built with — pass the request's
+    ///     ``OAuthAuthorizationRequest/config`` to keep them in lockstep. Defaults to
     ///     ``OAuthClientConfig/comfyIOS``.
     /// - Returns: An ``OAuthTokenResponse`` with the access and refresh tokens.
     /// - Throws: ``ComfyError`` on network failure or a rejected exchange.

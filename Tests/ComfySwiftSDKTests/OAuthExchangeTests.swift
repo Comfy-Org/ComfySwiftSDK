@@ -161,6 +161,42 @@ struct OAuthExchangeTests {
         #expect(fields["client_secret"] == nil)
     }
 
+    @Test("refresh grant carries the threaded client_id, not a hardcoded comfy-ios")
+    func refreshUsesThreadedClientId() async throws {
+        let box = CapturedRequestBox()
+        installTokenEndpoint(
+            status: 200,
+            body: #"{"access_token":"at2","refresh_token":"rt2","expires_in":900}"#,
+            capture: box
+        )
+        defer { TestURLProtocol.uninstall() }
+
+        let executor = OAuthTokenRefreshExecutor(session: TestURLProtocol.makeStubSession())
+        _ = try await executor.refresh(using: "old-refresh", clientId: "acme-app")
+
+        let fields = formFields(box.body)
+        #expect(fields["grant_type"] == "refresh_token")
+        #expect(fields["refresh_token"] == "old-refresh")
+        #expect(fields["client_id"] == "acme-app")
+        #expect(fields["resource"] == "https://cloud.comfy.org/api")
+    }
+
+    @Test("refresh grant defaults to the comfy-ios client_id when unthreaded")
+    func refreshDefaultsToComfyIOSClientId() async throws {
+        let box = CapturedRequestBox()
+        installTokenEndpoint(
+            status: 200,
+            body: #"{"access_token":"at2","refresh_token":"rt2","expires_in":900}"#,
+            capture: box
+        )
+        defer { TestURLProtocol.uninstall() }
+
+        let executor = OAuthTokenRefreshExecutor(session: TestURLProtocol.makeStubSession())
+        _ = try await executor.refresh(using: "old-refresh")
+
+        #expect(formFields(box.body)["client_id"] == "comfy-ios")
+    }
+
     @Test("exchange success decodes to OAuthTokenResponse")
     func exchangeSuccessDecodesTokenResponse() async throws {
         installTokenEndpoint(

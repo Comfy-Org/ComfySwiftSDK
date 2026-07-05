@@ -32,6 +32,12 @@ public struct OAuthClientConfig: Sendable {
 
     /// Creates an OAuth client configuration.
     ///
+    /// `redirectURI`'s scheme must equal `redirectScheme`: the SDK sends `redirectURI` to the
+    /// authorization server while the app registers `redirectScheme` with
+    /// `ASWebAuthenticationSession`, so a mismatched pair delivers the callback to a scheme the
+    /// app never observes and the sign-in silently stalls. This is enforced with a
+    /// `precondition`, as both are compile-time constants the embedding app controls.
+    ///
     /// - Parameters:
     ///   - clientId: The registered OAuth `client_id`.
     ///   - redirectScheme: The custom URL scheme this app owns for its callback.
@@ -43,6 +49,11 @@ public struct OAuthClientConfig: Sendable {
         redirectURI: String,
         scopes: [String]
     ) {
+        precondition(
+            URL(string: redirectURI)?.scheme?.caseInsensitiveCompare(redirectScheme) == .orderedSame,
+            "OAuthClientConfig.redirectURI scheme must equal redirectScheme "
+                + "(got redirectURI=\"\(redirectURI)\", redirectScheme=\"\(redirectScheme)\")"
+        )
         self.clientId = clientId
         self.redirectScheme = redirectScheme
         self.redirectURI = redirectURI

@@ -5,15 +5,22 @@ internal actor Transport {
     private let session: URLSession
     private let baseURL: URL
     private let credential: ComfyCredential
+    private let oauthConfig: OAuthClientConfig
 
     private var pendingRefreshTask: Task<OAuthTokenResponse, Error>?
 
     private let proactiveRefreshMargin: TimeInterval = 60.0
 
-    internal init(session: URLSession, baseURL: URL, credential: ComfyCredential) {
+    internal init(
+        session: URLSession,
+        baseURL: URL,
+        credential: ComfyCredential,
+        oauthConfig: OAuthClientConfig = .comfyIOS
+    ) {
         self.session = session
         self.baseURL = baseURL
         self.credential = credential
+        self.oauthConfig = oauthConfig
     }
 
     private func performRefresh(
@@ -26,7 +33,7 @@ internal actor Transport {
         let task = Task<OAuthTokenResponse, Error> {
             let executor = OAuthTokenRefreshExecutor(session: self.session)
             let refreshToken = try await refreshProvider()
-            let newTokens = try await executor.refresh(using: refreshToken)
+            let newTokens = try await executor.refresh(using: refreshToken, clientId: self.oauthConfig.clientId)
             try await tokenStore(newTokens)
             return newTokens
         }
