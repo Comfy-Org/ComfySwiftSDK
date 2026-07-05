@@ -5,30 +5,6 @@ struct WebSocketFrameEnvelope: Decodable {
     let data: AnyDecodable?
 }
 
-struct ProgressFrameData: Decodable {
-    let value: Double?
-    let max: Double?
-    let node: String?
-    let promptId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case value
-        case max
-        case node
-        case promptId = "prompt_id"
-    }
-}
-
-struct ExecutingFrameData: Decodable {
-    let node: String?
-    let promptId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case node
-        case promptId = "prompt_id"
-    }
-}
-
 struct ExecutedFrameData: Decodable {
     let node: String?
     let promptId: String?
@@ -38,14 +14,6 @@ struct ExecutedFrameData: Decodable {
         case node
         case promptId = "prompt_id"
         case output
-    }
-}
-
-struct ExecutionSuccessFrameData: Decodable {
-    let promptId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case promptId = "prompt_id"
     }
 }
 
@@ -114,8 +82,6 @@ struct JobDetailResponse: Decodable {
         case updateTime = "update_time"
     }
 }
-
-typealias JobStatusDTO = JobDetailResponse
 
 struct AnyDecodable: Decodable {
     let value: Any
