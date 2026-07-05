@@ -257,33 +257,11 @@ internal actor WebSocketSession {
                         didEmitFinalizing = true
                     }
                     do {
-                        var files: [WorkflowOutput.OutputFile] = []
-                        for ref in bufferedImageRefs {
-                            let (data, mime) = try await PollingFallback.withTransientRetry {
-                                try await transport.downloadView(
-                                    filename: ref.filename,
-                                    subfolder: ref.subfolder,
-                                    type: ref.type
-                                )
-                            }
-                            files.append(.image(data, mimeType: mime))
-                        }
-                        for ref in bufferedVideoRefs {
-                            let ext = (ref.filename as NSString).pathExtension
-                            let url = try await PollingFallback.withTransientRetry {
-                                try await transport.downloadViewToTempFile(
-                                    filename: ref.filename,
-                                    subfolder: ref.subfolder,
-                                    type: ref.type,
-                                    suggestedExtension: ext.isEmpty ? "mp4" : ext
-                                )
-                            }
-                            files.append(.video(url: url))
-                        }
-                        let duration = Date().timeIntervalSince(startTime)
-                        let output = WorkflowOutput(
-                            files: files,
-                            durationSeconds: duration,
+                        let output = try await PollingFallback.assembleOutput(
+                            imageRefs: bufferedImageRefs,
+                            videoRefs: bufferedVideoRefs,
+                            transport: transport,
+                            startTime: startTime,
                             jobId: jobId
                         )
                         continuation.yield(.complete(output))
