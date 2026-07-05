@@ -94,11 +94,7 @@ internal actor WebSocketSession {
             continuation.onTermination = { @Sendable reason in
                 driver.cancel()
                 registry.unregister(jobId: jobId)
-                if case .cancelled = reason {
-                    Task.detached {
-                        await transport.cancelJob(id: jobId)
-                    }
-                }
+                PollingFallback.fireCancelJobIfCancelled(reason, transport: transport, jobId: jobId)
             }
         }
     }

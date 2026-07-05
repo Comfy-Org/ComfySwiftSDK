@@ -53,11 +53,7 @@ internal actor PollingFallback {
             }
             continuation.onTermination = { @Sendable reason in
                 task.cancel()
-                if case .cancelled = reason {
-                    Task.detached {
-                        await transport.cancelJob(id: jobId)
-                    }
-                }
+                Self.fireCancelJobIfCancelled(reason, transport: transport, jobId: jobId)
             }
         }
     }
@@ -205,6 +201,24 @@ internal actor PollingFallback {
 
         continuation.yield(.cancelled)
         continuation.finish()
+    }
+
+    /// Fires a best-effort server-side cancel when a job event stream is torn
+    /// down by consumer cancellation. Shared by the WebSocket and polling stream
+    /// producers' `onTermination` closures, which both honor the documented
+    /// "cancelling the consumer cancels the job" guarantee. `ReattachCoordinator`
+    /// intentionally does not call this — reattaching to an already-running job
+    /// must not cancel it.
+    static func fireCancelJobIfCancelled(
+        _ reason: AsyncThrowingStream<JobEvent, Error>.Continuation.Termination,
+        transport: Transport,
+        jobId: String
+    ) {
+        if case .cancelled = reason {
+            Task.detached {
+                await transport.cancelJob(id: jobId)
+            }
+        }
     }
 
     static func isTransient(_ error: ComfyError) -> Bool {
