@@ -88,7 +88,7 @@ struct OAuthExchangeTests {
         #expect(params["state"]?.isEmpty == false)
         #expect(params["code_challenge"]?.isEmpty == false)
         #expect(params["code_challenge_method"] == "S256")
-        #expect(params["scope"] == OAuthConfiguration.scope)
+        #expect(params["scope"] == OAuthClientConfig.comfyIOS.scopes.joined(separator: " "))
         #expect(params["scope"]?.isEmpty == false)
         #expect(params["resource"] == "https://cloud.comfy.org/api")
         #expect(params["redirect_uri"] == "org.comfy.ios://oauth-callback")

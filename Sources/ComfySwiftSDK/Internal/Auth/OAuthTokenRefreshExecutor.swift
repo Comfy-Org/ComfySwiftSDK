@@ -25,7 +25,10 @@ internal actor OAuthTokenRefreshExecutor {
         body.queryItems = [
             URLQueryItem(name: "grant_type",    value: "refresh_token"),
             URLQueryItem(name: "refresh_token", value: refreshToken),
-            URLQueryItem(name: "client_id",     value: OAuthConfiguration.clientId),
+            // The refresh grant stays pinned to the first-party client that minted the token
+            // (parameterizing refresh is out of scope). Sourced from the canonical config so
+            // the client id has a single home.
+            URLQueryItem(name: "client_id",     value: OAuthClientConfig.comfyIOS.clientId),
             URLQueryItem(name: "resource",      value: OAuthConfiguration.resourceParameter),
         ]
 

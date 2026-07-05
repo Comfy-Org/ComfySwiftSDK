@@ -22,13 +22,17 @@ internal actor OAuthExchanger {
         self.session = session
     }
 
-    internal func exchange(code: String, codeVerifier: String) async throws -> OAuthTokenResponse {
+    internal func exchange(
+        code: String,
+        codeVerifier: String,
+        config: OAuthClientConfig = .comfyIOS
+    ) async throws -> OAuthTokenResponse {
         var body = URLComponents()
         body.queryItems = [
             URLQueryItem(name: "grant_type",    value: "authorization_code"),
             URLQueryItem(name: "code",          value: code),
-            URLQueryItem(name: "redirect_uri",  value: OAuthConfiguration.redirectURI),
-            URLQueryItem(name: "client_id",     value: OAuthConfiguration.clientId),
+            URLQueryItem(name: "redirect_uri",  value: config.redirectURI),
+            URLQueryItem(name: "client_id",     value: config.clientId),
             URLQueryItem(name: "code_verifier", value: codeVerifier),
             URLQueryItem(name: "resource",      value: OAuthConfiguration.resourceParameter),
         ]
