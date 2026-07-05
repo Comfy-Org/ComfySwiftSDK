@@ -94,11 +94,7 @@ internal actor WebSocketSession {
             continuation.onTermination = { @Sendable reason in
                 driver.cancel()
                 registry.unregister(jobId: jobId)
-                if case .cancelled = reason {
-                    Task.detached {
-                        await transport.cancelJob(id: jobId)
-                    }
-                }
+                PollingFallback.fireCancelJobIfCancelled(reason, transport: transport, jobId: jobId)
             }
         }
     }
@@ -203,7 +199,7 @@ internal actor WebSocketSession {
                             if !didEmitFinalizing {
                                 continuation.yield(.progress(
                                     fraction: lastFraction,
-                                    phase: phaseLabel(for: node)
+                                    phase: PhaseLabel.forNode(node)
                                 ))
                             }
                         } else {
@@ -225,7 +221,7 @@ internal actor WebSocketSession {
                             lastFraction = clampedFraction
                             continuation.yield(.progress(
                                 fraction: clampedFraction,
-                                phase: phaseLabel(for: lastNodeName)
+                                phase: PhaseLabel.forNode(lastNodeName)
                             ))
                         }
                     }
@@ -257,33 +253,11 @@ internal actor WebSocketSession {
                         didEmitFinalizing = true
                     }
                     do {
-                        var files: [WorkflowOutput.OutputFile] = []
-                        for ref in bufferedImageRefs {
-                            let (data, mime) = try await PollingFallback.withTransientRetry {
-                                try await transport.downloadView(
-                                    filename: ref.filename,
-                                    subfolder: ref.subfolder,
-                                    type: ref.type
-                                )
-                            }
-                            files.append(.image(data, mimeType: mime))
-                        }
-                        for ref in bufferedVideoRefs {
-                            let ext = (ref.filename as NSString).pathExtension
-                            let url = try await PollingFallback.withTransientRetry {
-                                try await transport.downloadViewToTempFile(
-                                    filename: ref.filename,
-                                    subfolder: ref.subfolder,
-                                    type: ref.type,
-                                    suggestedExtension: ext.isEmpty ? "mp4" : ext
-                                )
-                            }
-                            files.append(.video(url: url))
-                        }
-                        let duration = Date().timeIntervalSince(startTime)
-                        let output = WorkflowOutput(
-                            files: files,
-                            durationSeconds: duration,
+                        let output = try await PollingFallback.assembleOutput(
+                            imageRefs: bufferedImageRefs,
+                            videoRefs: bufferedVideoRefs,
+                            transport: transport,
+                            startTime: startTime,
                             jobId: jobId
                         )
                         continuation.yield(.complete(output))
@@ -341,7 +315,7 @@ internal actor WebSocketSession {
             }
             if PollingFallback.isTransient(translated) {
                 SDKLog.wsReadLoopError(error: translated, jobId: jobId, handingOffToPolling: true)
-                let lastPhase = didEmitQueued ? phaseLabel(for: lastNodeName) : nil
+                let lastPhase = didEmitQueued ? PhaseLabel.forNode(lastNodeName) : nil
                 await Self.handOffToPolling(
                     transport: transport,
                     jobId: jobId,
@@ -414,23 +388,3 @@ struct JobExecutionError: Error {
 }
 
 struct EmptyOutputError: Error {}
-
-fileprivate func phaseLabel(for node: String) -> String {
-    let lower = node.lowercased()
-    if lower.contains("ksampler") || lower.contains("sampler") {
-        return "sampling"
-    }
-    if lower.contains("vae") {
-        return "vae_decode"
-    }
-    if lower.contains("clip") || lower.contains("encode") {
-        return "encoding"
-    }
-    if lower.contains("save") || lower.contains("preview") {
-        return "saving"
-    }
-    if lower == "queued" {
-        return "queued"
-    }
-    return "executing"
-}

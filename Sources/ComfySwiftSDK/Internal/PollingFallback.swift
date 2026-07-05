@@ -53,11 +53,7 @@ internal actor PollingFallback {
             }
             continuation.onTermination = { @Sendable reason in
                 task.cancel()
-                if case .cancelled = reason {
-                    Task.detached {
-                        await transport.cancelJob(id: jobId)
-                    }
-                }
+                Self.fireCancelJobIfCancelled(reason, transport: transport, jobId: jobId)
             }
         }
     }
@@ -207,6 +203,24 @@ internal actor PollingFallback {
         continuation.finish()
     }
 
+    /// Fires a best-effort server-side cancel when a job event stream is torn
+    /// down by consumer cancellation. Shared by the WebSocket and polling stream
+    /// producers' `onTermination` closures, which both honor the documented
+    /// "cancelling the consumer cancels the job" guarantee. `ReattachCoordinator`
+    /// intentionally does not call this — reattaching to an already-running job
+    /// must not cancel it.
+    static func fireCancelJobIfCancelled(
+        _ reason: AsyncThrowingStream<JobEvent, Error>.Continuation.Termination,
+        transport: Transport,
+        jobId: String
+    ) {
+        if case .cancelled = reason {
+            Task.detached {
+                await transport.cancelJob(id: jobId)
+            }
+        }
+    }
+
     static func isTransient(_ error: ComfyError) -> Bool {
         switch error {
         case .network, .offline, .timeout:
@@ -232,7 +246,7 @@ internal actor PollingFallback {
             return "saving"
         case "failed":
             if let nodeType = dto.executionError?.nodeType, !nodeType.isEmpty {
-                return phaseLabel(forNode: nodeType)
+                return PhaseLabel.forNode(nodeType)
             }
             return "executing"
         default:
@@ -278,28 +292,61 @@ internal actor PollingFallback {
             throw ComfyError.unknown(underlying: EmptyOutputError())
         }
 
+        return try await assembleOutput(
+            imageRefs: imageRefs,
+            videoRefs: videoRefs,
+            transport: transport,
+            startTime: startTime,
+            jobId: jobId
+        )
+    }
+
+    /// Downloads the collected output references and assembles the final
+    /// `WorkflowOutput`. Shared by the WebSocket success path and the polling
+    /// fallback — the two callers collect the refs differently (incremental
+    /// `executed`-frame buffering vs. `dto.outputs` extraction) and handle the
+    /// empty-refs case on their own, but the download-and-assemble tail is
+    /// identical.
+    static func assembleOutput(
+        imageRefs: [OutputFileRef],
+        videoRefs: [OutputFileRef],
+        transport: Transport,
+        startTime: Date,
+        jobId: String
+    ) async throws -> WorkflowOutput {
         var files: [WorkflowOutput.OutputFile] = []
-        for ref in imageRefs {
-            let (data, mime) = try await withTransientRetry {
-                try await transport.downloadView(
-                    filename: ref.filename,
-                    subfolder: ref.subfolder,
-                    type: ref.type
-                )
+        do {
+            for ref in imageRefs {
+                let (data, mime) = try await withTransientRetry {
+                    try await transport.downloadView(
+                        filename: ref.filename,
+                        subfolder: ref.subfolder,
+                        type: ref.type
+                    )
+                }
+                files.append(.image(data, mimeType: mime))
             }
-            files.append(.image(data, mimeType: mime))
-        }
-        for ref in videoRefs {
-            let ext = (ref.filename as NSString).pathExtension
-            let url = try await withTransientRetry {
-                try await transport.downloadViewToTempFile(
-                    filename: ref.filename,
-                    subfolder: ref.subfolder,
-                    type: ref.type,
-                    suggestedExtension: ext.isEmpty ? "mp4" : ext
-                )
+            for ref in videoRefs {
+                let ext = (ref.filename as NSString).pathExtension
+                let url = try await withTransientRetry {
+                    try await transport.downloadViewToTempFile(
+                        filename: ref.filename,
+                        subfolder: ref.subfolder,
+                        type: ref.type,
+                        suggestedExtension: ext.isEmpty ? "mp4" : ext
+                    )
+                }
+                files.append(.video(url: url))
             }
-            files.append(.video(url: url))
+        } catch {
+            // A later download failing leaves the temp files from earlier video
+            // refs orphaned in the caches directory — the caller discards this
+            // partial result, so nothing else will ever clean them up. Delete any
+            // temp files already materialized before rethrowing.
+            for case let .video(url) in files {
+                try? FileManager.default.removeItem(at: url)
+            }
+            throw error
         }
 
         let duration = Date().timeIntervalSince(startTime)
@@ -360,25 +407,5 @@ internal actor PollingFallback {
             sleep: { duration in try await Task.sleep(for: duration) },
             body: body
         )
-    }
-
-    static func phaseLabel(forNode node: String) -> String {
-        let lower = node.lowercased()
-        if lower.contains("ksampler") || lower.contains("sampler") {
-            return "sampling"
-        }
-        if lower.contains("vae") {
-            return "vae_decode"
-        }
-        if lower.contains("clip") || lower.contains("encode") {
-            return "encoding"
-        }
-        if lower.contains("save") || lower.contains("preview") {
-            return "saving"
-        }
-        if lower == "queued" {
-            return "queued"
-        }
-        return "executing"
     }
 }

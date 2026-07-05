@@ -127,6 +127,7 @@ A few pointers:
 - `swift build` and `swift test` should both pass before you open a PR.
 - Keep the public surface small and `async`/`await`-native — no callbacks, delegates, or Combine.
 - New error conditions go through the `ComfyError` taxonomy rather than leaking transport details.
+- The SDK import boundary (sources import only `Foundation`, `CryptoKit`, and `os` — never `SwiftUI`, `SwiftData`, `Photos`, or `Security`) is enforced in-repo by `ImportBoundaryTests` under `swift test`.
 
 For anything substantial, open an issue first so we can talk through the approach.
 
