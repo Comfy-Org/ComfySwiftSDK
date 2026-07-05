@@ -357,19 +357,39 @@ internal actor PollingFallback {
         )
     }
 
-    static let outputFetchMaxAttempts: Int = 3
+    /// Delay schedule for the output-download retrier: a single 250 ms pause
+    /// before the second attempt, and none before the third (`.zero`). Kept as
+    /// data so the schedule stays visible and the attempt budget derives from
+    /// it rather than being a second, drift-prone constant.
+    static let outputFetchRetryDelays: [Duration] = [.milliseconds(250), .zero]
 
+    static var outputFetchMaxAttempts: Int { outputFetchRetryDelays.count + 1 }
+
+    /// Runs `body`, retrying transient `ComfyError`s on a fixed, injected delay
+    /// schedule. `delays[i]` is awaited (via `sleep`) after the `(i + 1)`-th
+    /// attempt fails transiently, before the next attempt; the total attempt
+    /// budget is `delays.count + 1`. Non-transient errors propagate immediately,
+    /// and the last transient error is rethrown once the budget is exhausted.
+    ///
+    /// The schedule and the sleep primitive are BOTH injected so each call site
+    /// keeps its own timing unchanged: the output retrier sleeps on `Task`
+    /// (real clock), the reattach retrier on its test-injectable `Clock`. A
+    /// non-positive delay (e.g. `.zero`) pads the attempt budget without a
+    /// pause — the next attempt runs immediately, exactly as a hand-rolled loop
+    /// with no `sleep` on that step would.
     static func withTransientRetry<T>(
+        delays: [Duration],
+        sleep: (Duration) async throws -> Void,
         body: () async throws -> T
     ) async throws -> T {
         var lastError: Error?
-        for attempt in 0 ..< outputFetchMaxAttempts {
+        for attempt in 0 ... delays.count {
             do {
                 return try await body()
             } catch let error as ComfyError where isTransient(error) {
                 lastError = error
-                if attempt == 0 {
-                    try? await Task.sleep(nanoseconds: 250_000_000)
+                if attempt < delays.count, delays[attempt] > .zero {
+                    try await sleep(delays[attempt])
                 }
                 continue
             } catch {
@@ -377,5 +397,15 @@ internal actor PollingFallback {
             }
         }
         throw lastError!
+    }
+
+    static func withTransientRetry<T>(
+        body: () async throws -> T
+    ) async throws -> T {
+        try await withTransientRetry(
+            delays: outputFetchRetryDelays,
+            sleep: { duration in try await Task.sleep(for: duration) },
+            body: body
+        )
     }
 }

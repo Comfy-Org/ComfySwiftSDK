@@ -35,22 +35,21 @@ internal actor ReattachCoordinator {
         }
     }
 
+    /// Fixed delay schedule for the catch-up status retrier: 250 ms before the
+    /// second attempt, 750 ms before the third. Two attempts' worth of pauses →
+    /// a three-attempt budget, matching the original hand-rolled loop.
+    private static let catchUpRetryDelays: [Duration] = [.milliseconds(250), .milliseconds(750)]
+
     private static func fetchJobStatusWithTransientRetry(
         transport: Transport,
         id: String,
         clock: any Clock<Duration>
     ) async throws -> JobDetailResponse {
-        let maxAttempts = 3
-        var attempt = 0
-        while true {
-            attempt += 1
-            do {
-                return try await transport.fetchJobStatus(id: id)
-            } catch let error as ComfyError
-                where PollingFallback.isTransient(error) && attempt < maxAttempts {
-                try await clock.sleep(for: .milliseconds(attempt == 1 ? 250 : 750))
-            }
-        }
+        try await PollingFallback.withTransientRetry(
+            delays: catchUpRetryDelays,
+            sleep: { duration in try await clock.sleep(for: duration) },
+            body: { try await transport.fetchJobStatus(id: id) }
+        )
     }
 
     private static func runReattach(
