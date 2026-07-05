@@ -109,6 +109,57 @@ internal actor Transport {
         }
     }
 
+    /// Shared HTTP plumbing for the `session.data(for:)`-based endpoints. Sends the
+    /// request (auth is applied per-caller beforehand), translates transport errors,
+    /// optionally runs the 400/422 error-body check, then the status check. Decoding
+    /// stays per-caller. The `download(for:)`-based temp-file path and the deliberately
+    /// swallowing `cancelJob` do not route through here.
+    ///
+    /// `parseErrorBody` gates the `checkBody` step so this shared helper preserves each
+    /// endpoint's pre-existing behavior: the write endpoints (upload/submit) and the
+    /// `api/view` downloads inspect a 400/422 body to surface `.serverRejected`, while
+    /// the `api/queue` / `api/jobs` reads deliberately skip it — a 400/422 there stays a
+    /// transient `.network` so `PollingFallback` keeps retrying rather than giving up.
+    private func send(
+        _ request: URLRequest,
+        parseErrorBody: Bool = true
+    ) async throws -> (Data, URLResponse) {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw Self.translate(error)
+        }
+
+        if parseErrorBody,
+           let http = response as? HTTPURLResponse,
+           http.statusCode == 400 || http.statusCode == 422 {
+            try Self.checkBody(data, status: http.statusCode)
+        }
+
+        try Self.checkStatus(response)
+        return (data, response)
+    }
+
+    /// Builds the `api/view` URL shared by the two download endpoints, failing fast
+    /// on a malformed URL rather than composing a request against a bad base.
+    private func viewURL(filename: String, subfolder: String, type: String) throws -> URL {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/view"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "filename", value: filename),
+            URLQueryItem(name: "subfolder", value: subfolder),
+            URLQueryItem(name: "type", value: type)
+        ]
+        guard let url = components?.url else {
+            throw ComfyError.unknown(underlying: URLError(.badURL))
+        }
+        return url
+    }
+
     internal func uploadImage(_ imageData: Data, mimeType: String) async throws -> String {
         try await withAuthRetry { try await performUploadImage(imageData, mimeType: mimeType) }
     }
@@ -137,20 +188,7 @@ internal actor Transport {
 
         urlRequest.httpBody = body
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: urlRequest)
-        } catch {
-            throw Self.translate(error)
-        }
-
-        if let http = response as? HTTPURLResponse,
-           http.statusCode == 400 || http.statusCode == 422 {
-            try Self.checkBody(data, status: http.statusCode)
-        }
-
-        try Self.checkStatus(response)
+        let (data, _) = try await send(urlRequest)
 
         do {
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -238,20 +276,7 @@ internal actor Transport {
             throw ComfyError.unknown(underlying: error)
         }
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: urlRequest)
-        } catch {
-            throw Self.translate(error)
-        }
-
-        if let http = response as? HTTPURLResponse,
-           http.statusCode == 400 || http.statusCode == 422 {
-            try Self.checkBody(data, status: http.statusCode)
-        }
-
-        try Self.checkStatus(response)
+        let (data, _) = try await send(urlRequest)
 
         do {
             let dto = try JSONDecoder().decode(SubmitJobDTO.self, from: data)
@@ -276,14 +301,7 @@ internal actor Transport {
         urlRequest.httpMethod = "GET"
         try await applyAuth(to: &urlRequest)
 
-        let response: URLResponse
-        do {
-            (_, response) = try await session.data(for: urlRequest)
-        } catch {
-            throw Self.translate(error)
-        }
-
-        try Self.checkStatus(response)
+        _ = try await send(urlRequest, parseErrorBody: false)
     }
 
     internal func fetchJobStatus(id: String) async throws -> JobDetailResponse {
@@ -296,15 +314,7 @@ internal actor Transport {
         urlRequest.httpMethod = "GET"
         try await applyAuth(to: &urlRequest)
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: urlRequest)
-        } catch {
-            throw Self.translate(error)
-        }
-
-        try Self.checkStatus(response)
+        let (data, _) = try await send(urlRequest, parseErrorBody: false)
 
         do {
             return try JSONDecoder().decode(JobDetailResponse.self, from: data)
@@ -336,34 +346,12 @@ internal actor Transport {
         subfolder: String,
         type: String
     ) async throws -> (Data, String) {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("api/view"),
-            resolvingAgainstBaseURL: false
-        )
-        components?.queryItems = [
-            URLQueryItem(name: "filename", value: filename),
-            URLQueryItem(name: "subfolder", value: subfolder),
-            URLQueryItem(name: "type", value: type)
-        ]
-        guard let url = components?.url else {
-            throw ComfyError.unknown(underlying: URLError(.badURL))
-        }
+        let url = try viewURL(filename: filename, subfolder: subfolder, type: type)
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         try await applyAuth(to: &urlRequest)
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: urlRequest)
-        } catch {
-            throw Self.translate(error)
-        }
-        if let http = response as? HTTPURLResponse,
-           http.statusCode == 400 || http.statusCode == 422 {
-            try Self.checkBody(data, status: http.statusCode)
-        }
-        try Self.checkStatus(response)
+        let (data, response) = try await send(urlRequest)
         let mime = (response as? HTTPURLResponse)?
             .value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
         return (data, mime)
@@ -391,18 +379,7 @@ internal actor Transport {
         type: String,
         suggestedExtension: String
     ) async throws -> URL {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("api/view"),
-            resolvingAgainstBaseURL: false
-        )
-        components?.queryItems = [
-            URLQueryItem(name: "filename", value: filename),
-            URLQueryItem(name: "subfolder", value: subfolder),
-            URLQueryItem(name: "type", value: type)
-        ]
-        guard let url = components?.url else {
-            throw ComfyError.unknown(underlying: URLError(.badURL))
-        }
+        let url = try viewURL(filename: filename, subfolder: subfolder, type: type)
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         try await applyAuth(to: &urlRequest)
@@ -413,6 +390,26 @@ internal actor Transport {
             (downloadedURL, response) = try await session.download(for: urlRequest)
         } catch {
             throw Self.translate(error)
+        }
+        // Unlike the delegate-based path, `download(for:)` hands the caller ownership of
+        // the temp file, so any early return below must delete it or it leaks on disk.
+        // Cleared to `false` only once the file has been moved to its destination.
+        var shouldCleanUpDownload = true
+        defer {
+            if shouldCleanUpDownload {
+                try? FileManager.default.removeItem(at: downloadedURL)
+            }
+        }
+        // `download(for:)` streams the body to a temp file rather than into memory, so
+        // it can't share `send`. Mirror its 400/422 error-body check by reading a bounded
+        // prefix of the error payload back off disk — never the whole file, so a hostile
+        // or proxy-injected multi-megabyte error page can't force an unbounded allocation.
+        // This keeps the endpoint consistent with `performDownloadView`: a rejected video
+        // download surfaces `.serverRejected` rather than a generic `.network` error.
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 400 || http.statusCode == 422 {
+            let body = Self.readErrorBodyPrefix(at: downloadedURL)
+            try Self.checkBody(body, status: http.statusCode)
         }
         try Self.checkStatus(response)
 
@@ -443,7 +440,24 @@ internal actor Transport {
         } catch {
             throw ComfyError.unknown(underlying: error)
         }
+        // The temp file now lives at `destination`; don't let the defer delete it.
+        shouldCleanUpDownload = false
         return destination
+    }
+
+    /// Upper bound on how much of a downloaded error body we read back off disk before
+    /// handing it to `checkBody`. Real 400/422 error payloads are a few hundred bytes of
+    /// JSON; capping the read keeps a malicious or proxy-injected oversized body from
+    /// forcing an unbounded, blocking allocation on the download path.
+    private static let maxErrorBodyBytes = 64 * 1024
+
+    /// Reads at most `maxErrorBodyBytes` from a downloaded temp file so a 400/422 body can
+    /// be inspected without loading an arbitrarily large payload into memory. A read
+    /// failure yields empty data, and the caller falls back to status-based error mapping.
+    private static func readErrorBodyPrefix(at url: URL) -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: maxErrorBodyBytes)) ?? Data()
     }
 
     /// Normalizes a server-supplied file extension before it is interpolated into an on-disk
