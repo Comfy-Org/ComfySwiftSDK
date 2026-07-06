@@ -152,6 +152,52 @@ struct ComfyAuthTests {
         }
     }
 
+    // MARK: - Closure adapters: a store *read* failure surfaces as .unknown, not an auth error
+
+    /// A store whose `load()` throws a caller-supplied error; `save`/`clear` are no-ops. Lets a test
+    /// force a read failure (a Keychain hiccup) independently of the in-memory fake.
+    private struct FailingLoadStore: ComfyTokenStore {
+        let error: Error
+        func load() async throws -> ComfyStoredTokens? { throw error }
+        func save(_ tokens: ComfyStoredTokens) async throws {}
+        func clear() async throws {}
+    }
+
+    @Test("tokenProvider surfaces a load failure as .unknown, NOT .authInvalid")
+    func tokenProviderLoadFailureSurfacesAsUnknown() async throws {
+        let store = FailingLoadStore(error: StubStoreError())
+        let closures = try #require(refreshableClosures(store: store, initialExpiry: nil))
+        let caught = await comfyError { _ = try await closures.tokenProvider() }
+        guard case .unknown(let underlying) = try #require(caught) else {
+            Issue.record("expected .unknown, got \(String(describing: caught))")
+            return
+        }
+        #expect(underlying is StubStoreError)
+    }
+
+    @Test("refreshProvider surfaces a load failure as .unknown, NOT .authExpired")
+    func refreshProviderLoadFailureSurfacesAsUnknown() async throws {
+        let store = FailingLoadStore(error: StubStoreError())
+        let closures = try #require(refreshableClosures(store: store, initialExpiry: nil))
+        let caught = await comfyError { _ = try await closures.refreshProvider() }
+        guard case .unknown(let underlying) = try #require(caught) else {
+            Issue.record("expected .unknown, got \(String(describing: caught))")
+            return
+        }
+        #expect(underlying is StubStoreError)
+    }
+
+    @Test("tokenProvider surfaces a cancelled load as .cancelled")
+    func tokenProviderCancelledLoadSurfacesAsCancelled() async throws {
+        let store = FailingLoadStore(error: CancellationError())
+        let closures = try #require(refreshableClosures(store: store, initialExpiry: nil))
+        let caught = await comfyError { _ = try await closures.tokenProvider() }
+        guard case .cancelled = try #require(caught) else {
+            Issue.record("expected .cancelled, got \(String(describing: caught))")
+            return
+        }
+    }
+
     // MARK: - tokenStore closure: failure surfaces as .unknown, not .authInvalid
 
     @Test("tokenStore closure persists a refreshed pair with an absolute expiry")
@@ -189,6 +235,19 @@ struct ComfyAuthTests {
             return
         }
         #expect(underlying is StubStoreError)
+    }
+
+    @Test("tokenStore closure surfaces a cancelled save as .cancelled, NOT .unknown")
+    func tokenStoreCancelledSaveSurfacesAsCancelled() async throws {
+        let store = InMemoryTokenStore(tokens(), saveError: CancellationError())
+        let closures = try #require(refreshableClosures(store: store, initialExpiry: nil))
+        let response = OAuthTokenResponse(accessToken: "new-a", refreshToken: "new-r", expiresIn: 3600)
+
+        let caught = await comfyError { try await closures.tokenStore(response) }
+        guard case .cancelled = try #require(caught) else {
+            Issue.record("expected .cancelled, got \(String(describing: caught))")
+            return
+        }
     }
 
     // MARK: - expiryProvider: seeded, and updated after a refresh-save
@@ -238,6 +297,18 @@ struct ComfyAuthTests {
         let response = OAuthTokenResponse(accessToken: "a", refreshToken: "r", expiresIn: 0)
         let stored = ComfyStoredTokens(response: response, now: now)
         #expect(stored.expiresAt == now)
+    }
+
+    // MARK: - Secret redaction (ComfyStoredTokens description)
+
+    @Test("ComfyStoredTokens description/debugDescription never leak the plaintext tokens")
+    func storedTokensDescriptionRedactsSecrets() {
+        let stored = tokens(access: "SECRET-ACCESS", refresh: "SECRET-REFRESH")
+        for rendered in [stored.description, stored.debugDescription, "\(stored)"] {
+            #expect(!rendered.contains("SECRET-ACCESS"))
+            #expect(!rendered.contains("SECRET-REFRESH"))
+            #expect(rendered.contains("<redacted>"))
+        }
     }
 
     // MARK: - signOut

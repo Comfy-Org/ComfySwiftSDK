@@ -50,6 +50,17 @@ extension ComfyStoredTokens {
     }
 }
 
+extension ComfyStoredTokens: CustomStringConvertible, CustomDebugStringConvertible {
+    /// Both `accessToken` and `refreshToken` are secrets (see the type doc). Override the
+    /// synthesized reflection so an accidental log or string interpolation of a value cannot leak
+    /// the plaintext tokens; only the non-secret ``expiresAt`` is shown.
+    public var description: String {
+        "ComfyStoredTokens(accessToken: <redacted>, refreshToken: <redacted>, expiresAt: \(expiresAt))"
+    }
+
+    public var debugDescription: String { description }
+}
+
 /// A persistence backend for OAuth tokens, injected into ``ComfyAuth`` so the SDK can restore a
 /// refreshable client and sign out without knowing how or where tokens are stored.
 ///
@@ -97,9 +108,12 @@ public enum ComfyAuth {
     /// mode whose four closures adapt the store:
     ///
     /// - the token provider reads the current access token (throwing
-    ///   ``ComfyError/authInvalid`` if it has gone missing or empty),
+    ///   ``ComfyError/authInvalid`` if it has gone missing or empty; a storage *read* failure is
+    ///   surfaced as ``ComfyError/unknown(underlying:)`` so a transient error is not misreported as
+    ///   a rejected credential),
     /// - the refresh provider reads the current refresh token (throwing
-    ///   ``ComfyError/authExpired`` if it has gone missing or empty),
+    ///   ``ComfyError/authExpired`` if it has gone missing or empty; a read failure likewise
+    ///   surfaces as ``ComfyError/unknown(underlying:)``),
     /// - the token store persists each refreshed pair via ``ComfyTokenStore/save(_:)``, surfacing a
     ///   persistence failure as ``ComfyError/unknown(underlying:)`` — never ``ComfyError/authInvalid``,
     ///   so an infrastructure write error is not misreported as expiry,
@@ -150,15 +164,36 @@ public enum ComfyAuth {
         // by the `tokenStore` closure on every successful save. Returning `nil` here instead would
         // make the SDK treat the token as always-expired and refresh before *every* request.
         let expiryCache = ExpiryCache(initialExpiry)
+        // Storage I/O failures are infrastructure, not credential problems. `Transport.applyAuth`
+        // maps any *non*-`ComfyError` thrown by these closures to `.authInvalid` (and
+        // `withAuthRetry` escalates a second `.authInvalid` to `.authExpired`), so a raw
+        // Keychain/storage error would be misreported as a rejected credential and force a spurious
+        // sign-out. Normalize store errors before they escape the closures: pass `ComfyError`s
+        // through unchanged, surface cooperative cancellation as `.cancelled`, and wrap everything
+        // else as `.unknown`. A genuinely missing/empty token still throws the auth cases below.
+        @Sendable func mapStoreError(_ error: Error) -> ComfyError {
+            switch error {
+            case let comfy as ComfyError: return comfy
+            case is CancellationError: return .cancelled
+            default: return .unknown(underlying: error)
+            }
+        }
+        @Sendable func loadTokens() async throws -> ComfyStoredTokens? {
+            do {
+                return try await store.load()
+            } catch {
+                throw mapStoreError(error)
+            }
+        }
         return .oauthRefreshable(
             tokenProvider: {
-                guard let tokens = try await store.load(), !tokens.accessToken.isEmpty else {
+                guard let tokens = try await loadTokens(), !tokens.accessToken.isEmpty else {
                     throw ComfyError.authInvalid
                 }
                 return tokens.accessToken
             },
             refreshProvider: {
-                guard let tokens = try await store.load(), !tokens.refreshToken.isEmpty else {
+                guard let tokens = try await loadTokens(), !tokens.refreshToken.isEmpty else {
                     throw ComfyError.authExpired
                 }
                 return tokens.refreshToken
@@ -167,11 +202,13 @@ public enum ComfyAuth {
                 let refreshed = ComfyStoredTokens(response: response, now: Date())
                 // A persistence failure must surface as `.unknown` — never `.authInvalid` — so a
                 // store write error is not misreported as an invalid credential (matches the
-                // existing OAuthTokenStore contract).
+                // existing OAuthTokenStore contract). Cooperative cancellation is passed through as
+                // `.cancelled` rather than swallowed into `.unknown`, so a cancelled save unwinds
+                // the task instead of reading as a persistence failure.
                 do {
                     try await store.save(refreshed)
                 } catch {
-                    throw ComfyError.unknown(underlying: error)
+                    throw mapStoreError(error)
                 }
                 expiryCache.set(refreshed.expiresAt)
             },
