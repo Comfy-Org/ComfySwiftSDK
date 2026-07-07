@@ -27,14 +27,23 @@ public final class ComfyCloudClient: Sendable {
 
     /// Creates a client authenticated with the given credential.
     ///
-    /// - Parameter credential: How the client authenticates each request — an API key or an
-    ///   OAuth token provider. See ``ComfyCredential``.
-    public init(credential: ComfyCredential) {
+    /// - Parameters:
+    ///   - credential: How the client authenticates each request — an API key or an OAuth token
+    ///     provider. See ``ComfyCredential``.
+    ///   - config: The OAuth client config the tokens were minted under. In
+    ///     ``ComfyCredential/oauthRefreshable(tokenProvider:refreshProvider:tokenStore:expiryProvider:)``
+    ///     mode the SDK-owned refresh grant sends this config's ``OAuthClientConfig/clientId``, which
+    ///     per RFC 6749 §6 must match the client the token was issued to. Pass the same config used
+    ///     with ``buildAuthorizationRequest(config:)`` / ``exchangeAuthorizationCode(_:codeVerifier:config:)``
+    ///     (available as ``OAuthAuthorizationRequest/config``). Defaults to ``OAuthClientConfig/comfyIOS``;
+    ///     ignored for non-refreshable credentials.
+    public init(credential: ComfyCredential, config: OAuthClientConfig = .comfyIOS) {
         let session = URLSession(configuration: ComfySDKInfo.sessionConfiguration())
         let transport = Transport(
             session: session,
             baseURL: Self.baseURL,
-            credential: credential
+            credential: credential,
+            oauthConfig: config
         )
         self.transport = transport
         self.webSocketSession = WebSocketSession(
@@ -152,20 +161,28 @@ public final class ComfyCloudClient: Sendable {
         webSocketSession.detachStream(jobId: jobId)
     }
 
-    /// The custom URL scheme the app uses for the OAuth callback.
-    public static let oauthCallbackScheme: String = OAuthConfiguration.callbackScheme
+    /// The custom URL scheme the first-party Comfy iOS app uses for the OAuth callback.
+    ///
+    /// This is the ``OAuthClientConfig/comfyIOS`` default. Apps that supply their own
+    /// ``OAuthClientConfig`` should use their config's ``OAuthClientConfig/redirectScheme``
+    /// as the `ASWebAuthenticationSession` callback scheme instead.
+    public static let oauthCallbackScheme: String = OAuthClientConfig.comfyIOS.redirectScheme
 
     /// Builds the material for one "Sign in with Comfy" authorization attempt.
     ///
     /// Mints a fresh PKCE code verifier and S256 challenge, a `state` nonce, and the fully-formed
     /// authorize URL. Open ``OAuthAuthorizationRequest/authorizationURL`` in an
     /// `ASWebAuthenticationSession`, then redeem the returned code with
-    /// ``exchangeAuthorizationCode(_:codeVerifier:)``.
+    /// ``exchangeAuthorizationCode(_:codeVerifier:config:)``.
     ///
+    /// - Parameter config: The OAuth client parameters (client id, redirect URI, scopes) to
+    ///   build the request for. Defaults to ``OAuthClientConfig/comfyIOS``.
     /// - Returns: An ``OAuthAuthorizationRequest`` carrying the authorize URL, `state`, and the
     ///   `codeVerifier` to retain for the token exchange. The verifier and state are secrets — do
     ///   not log them.
-    public static func buildAuthorizationRequest() -> OAuthAuthorizationRequest {
+    public static func buildAuthorizationRequest(
+        config: OAuthClientConfig = .comfyIOS
+    ) -> OAuthAuthorizationRequest {
         var rng = SystemRandomNumberGenerator()
 
         let rawBytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &rng) }
@@ -185,13 +202,13 @@ public final class ComfyCloudClient: Sendable {
         }
         components.queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "client_id", value: OAuthConfiguration.clientId),
+            URLQueryItem(name: "client_id", value: config.clientId),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "code_challenge", value: codeChallenge),
             URLQueryItem(name: "code_challenge_method", value: OAuthConfiguration.pkceCodeChallengeMethod),
-            URLQueryItem(name: "scope", value: OAuthConfiguration.scope),
+            URLQueryItem(name: "scope", value: config.scopes.joined(separator: " ")),
             URLQueryItem(name: "resource", value: OAuthConfiguration.resourceParameter),
-            URLQueryItem(name: "redirect_uri", value: OAuthConfiguration.redirectURI),
+            URLQueryItem(name: "redirect_uri", value: config.redirectURI),
         ]
         guard let url = components.url else {
             fatalError("OAuthConfiguration produced an invalid authorize URL")
@@ -200,27 +217,35 @@ public final class ComfyCloudClient: Sendable {
         return OAuthAuthorizationRequest(
             authorizationURL: url,
             state: state,
-            codeVerifier: codeVerifier
+            codeVerifier: codeVerifier,
+            config: config
         )
     }
 
     /// Redeems an authorization code for an OAuth token pair.
     ///
     /// Call after the web-session callback returns a code, passing the `codeVerifier` from the
-    /// matching ``buildAuthorizationRequest()``. Persist the returned tokens (for example, in the
-    /// Keychain) and construct an OAuth-mode client with ``ComfyCredential``.
+    /// matching ``buildAuthorizationRequest(config:)``. Persist the returned tokens (for example,
+    /// in the Keychain) and construct an OAuth-mode client with ``ComfyCredential`` — passing the
+    /// same config to ``init(credential:config:)`` so the SDK-owned refresh grant matches.
     ///
     /// - Parameters:
     ///   - code: The authorization code from the callback URL.
-    ///   - codeVerifier: The PKCE verifier from the originating ``buildAuthorizationRequest()``.
+    ///   - codeVerifier: The PKCE verifier from the originating
+    ///     ``buildAuthorizationRequest(config:)``.
+    ///   - config: The OAuth client parameters (client id, redirect URI) to redeem against. Must
+    ///     match the config the authorization request was built with — pass the request's
+    ///     ``OAuthAuthorizationRequest/config`` to keep them in lockstep. Defaults to
+    ///     ``OAuthClientConfig/comfyIOS``.
     /// - Returns: An ``OAuthTokenResponse`` with the access and refresh tokens.
     /// - Throws: ``ComfyError`` on network failure or a rejected exchange.
     public static func exchangeAuthorizationCode(
         _ code: String,
-        codeVerifier: String
+        codeVerifier: String,
+        config: OAuthClientConfig = .comfyIOS
     ) async throws -> OAuthTokenResponse {
         let exchanger = OAuthExchanger(session: URLSession(configuration: ComfySDKInfo.sessionConfiguration()))
-        return try await exchanger.exchange(code: code, codeVerifier: codeVerifier)
+        return try await exchanger.exchange(code: code, codeVerifier: codeVerifier, config: config)
     }
 
     private static func base64URLEncode(_ data: Data) -> String {

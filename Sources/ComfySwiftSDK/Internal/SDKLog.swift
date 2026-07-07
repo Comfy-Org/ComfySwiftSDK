@@ -114,6 +114,8 @@ internal enum SDKLog {
         switch error {
         case .authInvalid:        return "ComfyError.authInvalid"
         case .authExpired:        return "ComfyError.authExpired"
+        case .authStateMismatch:  return "ComfyError.authStateMismatch"
+        case .authCancelled:      return "ComfyError.authCancelled"
         case .network:            return "ComfyError.network"
         case .offline:            return "ComfyError.offline"
         case .timeout:            return "ComfyError.timeout"

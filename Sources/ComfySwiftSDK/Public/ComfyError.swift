@@ -9,6 +9,17 @@ public enum ComfyError: Error, Sendable {
     /// Credentials were once valid but have expired.
     case authExpired
 
+    /// The OAuth callback's `state` did not match the value from the originating authorization
+    /// request — a possible CSRF or a crossed session. The callback was rejected without
+    /// redeeming the code. Thrown by ``OAuthAuthorizationRequest/extractCode(fromCallback:)``.
+    case authStateMismatch
+
+    /// The OAuth authorization did not complete: the user cancelled or denied consent, or the
+    /// callback carried no usable authorization code. Thrown by
+    /// ``OAuthAuthorizationRequest/extractCode(fromCallback:)`` when the callback has no
+    /// non-empty `code`.
+    case authCancelled
+
     /// A transport-level network failure not otherwise classified, carrying the underlying error.
     case network(underlying: Error)
 

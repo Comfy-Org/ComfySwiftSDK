@@ -49,33 +49,6 @@ struct OAuthConfigurationTests {
         #expect(OAuthConfiguration.resourceParameter == "https://cloud.comfy.org/api")
     }
 
-    @Test("redirect URI matches the pending backend seed byte-identically")
-    func redirectURIMatchesContract() {
-        #expect(OAuthConfiguration.redirectURI == "org.comfy.ios://oauth-callback")
-    }
-
-    @Test("callback scheme is org.comfy.ios")
-    func callbackSchemeMatchesContract() {
-        #expect(OAuthConfiguration.callbackScheme == "org.comfy.ios")
-    }
-
-    @Test("client ID is comfy-ios")
-    func clientIdMatchesContract() {
-        #expect(OAuthConfiguration.clientId == "comfy-ios")
-    }
-
-    @Test("redirect URI scheme contains a dot — bare comfy:// is denylisted")
-    func redirectURISchemeContainsDot() throws {
-        let scheme = try #require(
-            OAuthConfiguration.redirectURI.split(separator: ":").first.map(String.init)
-        )
-        #expect(scheme.contains("."))
-    }
-
-    @Test("redirect URI starts with callbackScheme + ://")
-    func redirectURIStartsWithCallbackScheme() {
-        #expect(
-            OAuthConfiguration.redirectURI.hasPrefix(OAuthConfiguration.callbackScheme + "://")
-        )
-    }
+    // The per-app client id / redirect URI / redirect scheme / scopes moved to the public
+    // OAuthClientConfig; their contract assertions now live in OAuthClientConfigTests.
 }
