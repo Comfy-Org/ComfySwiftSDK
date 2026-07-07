@@ -172,6 +172,41 @@ Credentials are held privately and are never logged, returned, or interpolated i
 you need the lower-level primitives, `ComfyCloudClient.buildAuthorizationRequest(config:)` and
 `exchangeAuthorizationCode(_:codeVerifier:config:)` remain available.
 
+### Two tiers: bring-your-own vs. batteries-included (`ComfyAuthKit`)
+
+The example above is the **bring-your-own** tier: depend on `ComfySwiftSDK` alone and inject your own
+`ComfyWebAuthPresenter` and `ComfyTokenStore`. The core SDK imports **Foundation only** — no
+`AuthenticationServices`, no `Security` — so it stays reusable across surfaces and never forces a
+UI/keychain dependency on a consumer that doesn't want one.
+
+If you'd rather not hand-write that boilerplate, add the **`ComfyAuthKit`** product. It ships the two
+obvious defaults — an `ASWebAuthenticationSession`-backed presenter and a Keychain-backed token store —
+in a separate target that is *allowed* to import `AuthenticationServices` and `Security`:
+
+```swift
+import ComfySwiftSDK
+import ComfyAuthKit
+
+// Default presenter (ASWebAuthenticationSession) + default store (Keychain). No boilerplate.
+let presenter = await ASWebAuthPresenter()          // @MainActor
+let store = try KeychainTokenStore()                // stored under your bundle id + ".oauth"
+
+let client = try await ComfyAuth.signIn(presenter: presenter, store: store)
+
+// Later launch: rebuild the signed-in client from the Keychain without re-prompting.
+let restored = try await ComfyAuth.restoreClient(store: store)
+```
+
+`ASWebAuthPresenter` retains the session until the callback fires and maps a user dismissal onto
+`ComfyError.authCancelled`; it takes an optional `anchor:` when the automatic key-window choice isn't
+right. `KeychainTokenStore` persists the three OAuth slots under
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (readable by background reattach while the device is
+locked, kept out of backups and off other devices). The default `init()` derives its namespace from
+the app's bundle id and throws `KeychainError.missingBundleIdentifier` in a process without one (e.g. a
+CLI) rather than sharing a hard-coded namespace; pass an explicit `init(service:)` there and for test
+isolation. Reach for `ComfyAuthKit` when you want defaults; depend on `ComfySwiftSDK` alone when you
+want full control.
+
 ## Status
 
 **Pre-1.0.** The SDK is battle-tested by the Comfy Go iOS app, builds clean, and ships with a full test
