@@ -28,8 +28,14 @@ extension ComfyAuth {
     /// - Returns: A refreshable ``ComfyCloudClient`` authenticated with the freshly minted tokens.
     /// - Throws: ``ComfyError/authCancelled`` if the user dismisses the web session or the callback
     ///   carries no code; ``ComfyError/authStateMismatch`` if the callback's `state` is absent or does
-    ///   not match; and any ``ComfyError`` the token exchange or the store's
+    ///   not match; ``ComfyError/authInvalid`` if the token endpoint returns an empty access or
+    ///   refresh token; and any ``ComfyError`` the token exchange or the store's
     ///   ``ComfyTokenStore/save(_:)`` raises — all propagated unchanged.
+    /// - Note: If ``ComfyTokenStore/save(_:)`` fails *after* the code has been redeemed, the error
+    ///   propagates and the freshly minted tokens are dropped rather than stored. The refresh token is
+    ///   then live on the server with no client record; the next ``signIn(presenter:store:config:)``
+    ///   mints a new pair and the orphaned one lapses on its own expiry. The SDK does not attempt a
+    ///   revocation call, so a store whose `save` can fail should treat this as a normal retry.
     public static func signIn(
         presenter: ComfyWebAuthPresenter,
         store: ComfyTokenStore,
@@ -70,6 +76,12 @@ extension ComfyAuth {
         // CSRF/misconfiguration — done by the SDK, never the presenter.
         let code = try request.extractCode(fromCallback: callback)
         let tokens = try await exchange(code, request.codeVerifier, config)
+        // A well-formed-but-empty token pair (malformed JSON that still decodes) would otherwise be
+        // persisted as usable credentials and fail only on the first authenticated request; reject it
+        // at sign-in instead so the failure surfaces here.
+        guard !tokens.accessToken.isEmpty, !tokens.refreshToken.isEmpty else {
+            throw ComfyError.authInvalid
+        }
         // Map the wire response's relative `expiresIn` to an absolute `expiresAt` at persist time, and
         // seed the returned client's expiry cache from the same value — no re-load, and no
         // force-unwrap of `restoreClient`, which would only ever be `nil` for an empty token we just

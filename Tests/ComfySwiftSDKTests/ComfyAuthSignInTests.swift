@@ -329,6 +329,32 @@ struct ComfyAuthSignInTests {
         #expect(try await store.load() == nil)
     }
 
+    @Test("signIn rejects an empty token pair instead of persisting it")
+    func signInRejectsEmptyTokens() async throws {
+        let store = InMemoryTokenStore()
+        let exchange = CapturedExchange()
+        let presenter = FakePresenter(behavior: .validCallback(code: "c"), seen: CapturedPresentation())
+
+        let caught = await comfyError {
+            _ = try await ComfyAuth.signIn(
+                presenter: presenter, store: store, config: .comfyIOS,
+                exchange: stubExchange(
+                    capture: exchange,
+                    response: OAuthTokenResponse(accessToken: "", refreshToken: "", expiresIn: 3600)
+                )
+            )
+        }
+
+        guard case .authInvalid = try #require(caught) else {
+            Issue.record("expected .authInvalid, got \(String(describing: caught))")
+            return
+        }
+        // The exchange ran, but empty credentials are never persisted.
+        #expect(exchange.count == 1)
+        #expect(await store.saveCount == 0)
+        #expect(try await store.load() == nil)
+    }
+
     @Test("signIn propagates a store save failure")
     func signInPropagatesSaveFailure() async throws {
         let store = InMemoryTokenStore(saveError: StubStoreError())

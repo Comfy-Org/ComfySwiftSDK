@@ -21,6 +21,11 @@ import Foundation
 ///   ``ComfyAuth/signIn(presenter:store:config:)``, so callers distinguish "the user backed out"
 ///   from a genuine failure by catching a single, stable error type. Any other transport-level
 ///   error may be thrown as-is.
+/// - Important: ``authenticate(url:callbackURLScheme:)`` is `@MainActor`. `ASWebAuthenticationSession`
+///   (and the AppKit/UIKit presentation it drives) must be started on the main thread, and the SDK
+///   invokes the presenter from a non-isolated executor — so the requirement pins the call to the
+///   main actor for conformers, making a correct `start()` the default rather than a caller
+///   responsibility.
 public protocol ComfyWebAuthPresenter: Sendable {
 
     /// Presents `url` in a web authentication session and returns the callback URL the OAuth server
@@ -36,5 +41,6 @@ public protocol ComfyWebAuthPresenter: Sendable {
     ///   to validate.
     /// - Throws: ``ComfyError/authCancelled`` when the user dismisses the session; any other error
     ///   on a transport-level failure.
+    @MainActor
     func authenticate(url: URL, callbackURLScheme: String) async throws -> URL
 }

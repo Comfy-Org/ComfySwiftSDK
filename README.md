@@ -114,9 +114,17 @@ imports `AuthenticationServices`:
 
 ```swift
 import AuthenticationServices
+import UIKit
 
-// A thin app-side adapter over ASWebAuthenticationSession.
+// A thin app-side adapter over ASWebAuthenticationSession. `@MainActor` because the protocol
+// requirement is main-actor-isolated: ASWebAuthenticationSession.start() must run on the main thread.
+@MainActor
 final class WebAuthPresenter: NSObject, ComfyWebAuthPresenter, ASWebAuthenticationPresentationContextProviding {
+    // Held for the session's whole lifetime: ASWebAuthenticationSession is not retained by the
+    // system, so a local-only reference would be deallocated after `start()` returns, cancelling
+    // the flow and hanging sign-in.
+    private var session: ASWebAuthenticationSession?
+
     func authenticate(url: URL, callbackURLScheme: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackURLScheme) { url, error in
@@ -128,10 +136,19 @@ final class WebAuthPresenter: NSObject, ComfyWebAuthPresenter, ASWebAuthenticati
                 }
             }
             session.presentationContextProvider = self
+            self.session = session
             session.start()
         }
     }
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { ASPresentationAnchor() }
+
+    // Present on the app's active window — a detached `ASPresentationAnchor()` has no window scene
+    // and the auth sheet would fail to display.
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow } ?? ASPresentationAnchor()
+    }
 }
 
 // One call: the returned client is signed in and refreshes itself; tokens are persisted in `store`.
