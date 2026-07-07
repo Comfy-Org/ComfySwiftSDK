@@ -127,7 +127,8 @@ final class WebAuthPresenter: NSObject, ComfyWebAuthPresenter, ASWebAuthenticati
 
     func authenticate(url: URL, callbackURLScheme: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackURLScheme) { url, error in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackURLScheme) { [weak self] url, error in
+                self?.session = nil   // release the one-shot session once the callback fires
                 if let url { continuation.resume(returning: url) }
                 else if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
                     continuation.resume(throwing: ComfyError.authCancelled)   // user dismissed the sheet
@@ -137,7 +138,14 @@ final class WebAuthPresenter: NSObject, ComfyWebAuthPresenter, ASWebAuthenticati
             }
             session.presentationContextProvider = self
             self.session = session
-            session.start()
+            // start() returns false without ever calling the completion handler when the system
+            // refuses to present (bad anchor, redirect mismatch, missing entitlements). Guard it so
+            // sign-in fails fast instead of hanging on a continuation that never resumes.
+            guard session.start() else {
+                self.session = nil
+                continuation.resume(throwing: ComfyError.authCancelled)
+                return
+            }
         }
     }
 
