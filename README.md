@@ -105,10 +105,72 @@ let client = ComfyCloudClient(apiKey: "your-api-key")
 let client = ComfyCloudClient(credential: .oauth(tokenProvider: { await myKeychain.accessToken() }))
 ```
 
-For the OAuth handshake, `ComfyCloudClient.buildAuthorizationRequest()` mints the PKCE material and the
-authorize URL; you drive the browser step (`ASWebAuthenticationSession`) and pass the callback code to
-`exchangeAuthorizationCode(_:codeVerifier:)`. Credentials are held privately and are never logged,
-returned, or interpolated into error messages.
+### Sign in with Comfy (OAuth)
+
+`ComfyAuth.signIn` runs the whole authorization-code + PKCE handshake in one call — build → present →
+verify `state` → exchange → persist → return a ready, self-refreshing client. The SDK owns everything
+except presenting the browser, which you inject through a `ComfyWebAuthPresenter` so the SDK never
+imports `AuthenticationServices`:
+
+```swift
+import AuthenticationServices
+import UIKit
+
+// A thin app-side adapter over ASWebAuthenticationSession. `@MainActor` because the protocol
+// requirement is main-actor-isolated: ASWebAuthenticationSession.start() must run on the main thread.
+@MainActor
+final class WebAuthPresenter: NSObject, ComfyWebAuthPresenter, ASWebAuthenticationPresentationContextProviding {
+    // Held for the session's whole lifetime: ASWebAuthenticationSession is not retained by the
+    // system, so a local-only reference would be deallocated after `start()` returns, cancelling
+    // the flow and hanging sign-in.
+    private var session: ASWebAuthenticationSession?
+
+    func authenticate(url: URL, callbackURLScheme: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackURLScheme) { [weak self] url, error in
+                self?.session = nil   // release the one-shot session once the callback fires
+                if let url { continuation.resume(returning: url) }
+                else if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
+                    continuation.resume(throwing: ComfyError.authCancelled)   // user dismissed the sheet
+                } else {
+                    continuation.resume(throwing: error ?? ComfyError.authCancelled)
+                }
+            }
+            session.presentationContextProvider = self
+            self.session = session
+            // start() returns false without ever calling the completion handler when the system
+            // refuses to present (bad anchor, redirect mismatch, missing entitlements). Guard it so
+            // sign-in fails fast instead of hanging on a continuation that never resumes.
+            guard session.start() else {
+                self.session = nil
+                continuation.resume(throwing: ComfyError.authCancelled)
+                return
+            }
+        }
+    }
+
+    // Present on the app's active window — a detached `ASPresentationAnchor()` has no window scene
+    // and the auth sheet would fail to display.
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow } ?? ASPresentationAnchor()
+    }
+}
+
+// One call: the returned client is signed in and refreshes itself; tokens are persisted in `store`.
+let client = try await ComfyAuth.signIn(presenter: WebAuthPresenter(), store: myTokenStore)
+```
+
+`store` is your `ComfyTokenStore` (Keychain, an encrypted file, …). On a later launch,
+`ComfyAuth.restoreClient(store:)` rebuilds the same refreshable client without re-prompting, and
+`ComfyAuth.signOut(store:)` clears it. Prefer a non-default `OAuthClientConfig`? Pass it as the
+`config:` argument and it is threaded through the exchange and every silent refresh.
+
+Credentials are held privately and are never logged, returned, or interpolated into error messages. If
+you need the lower-level primitives, `ComfyCloudClient.buildAuthorizationRequest(config:)` and
+`exchangeAuthorizationCode(_:codeVerifier:config:)` remain available.
 
 ## Status
 

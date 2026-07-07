@@ -25,6 +25,12 @@ public final class ComfyCloudClient: Sendable {
     private let webSocketSession: WebSocketSession
     private let reattachCoordinator: ReattachCoordinator
 
+    /// The credential this client authenticates with. Internal so tests can assert the *mode* a
+    /// factory produced (e.g. that ``ComfyAuth/signIn(presenter:store:config:)`` returns an
+    /// ``ComfyCredential/oauthRefreshable(tokenProvider:refreshProvider:tokenStore:expiryProvider:)``
+    /// client) without a way to leak the credential across the public surface.
+    let credential: ComfyCredential
+
     /// Creates a client authenticated with the given credential.
     ///
     /// - Parameters:
@@ -38,6 +44,7 @@ public final class ComfyCloudClient: Sendable {
     ///     (available as ``OAuthAuthorizationRequest/config``). Defaults to ``OAuthClientConfig/comfyIOS``;
     ///     ignored for non-refreshable credentials.
     public init(credential: ComfyCredential, config: OAuthClientConfig = .comfyIOS) {
+        self.credential = credential
         let session = URLSession(configuration: ComfySDKInfo.sessionConfiguration())
         let transport = Transport(
             session: session,
