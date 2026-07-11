@@ -254,6 +254,16 @@ internal actor PollingFallback {
         }
     }
 
+    /// The jobs REST endpoint carries no numeric progress signal — `JobDetailResponse`
+    /// exposes only `status`/`outputs`/`executionError`/timestamps, with no field to
+    /// derive a completion fraction from. A real fraction is available *only* on the
+    /// live WebSocket `progress` frame (`value / max`, see `WebSocketSession`); the
+    /// polling and reattach paths that call this run precisely when that frame is
+    /// unavailable. So `0.0` is the intentional, honest value here — a placeholder that
+    /// keeps the phase half of change-detection working while reporting "fraction
+    /// unknown," not a stub awaiting derivation. `runPollLoop` still surfaces phase
+    /// transitions, but the `fraction != lastFraction` half of its change guard is dead
+    /// from this source by design; `ReattachCoordinator` emits a single `0.0` progress.
     static func deriveFraction(from dto: JobDetailResponse) -> Double {
         return 0.0
     }
