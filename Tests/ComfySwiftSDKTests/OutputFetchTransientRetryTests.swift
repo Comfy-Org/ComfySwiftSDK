@@ -124,7 +124,7 @@ struct OutputFetchTransientRetryTests {
 
         let dto = JobDetailResponse(
             id: "job-99",
-            status: "completed",
+            status: .completed,
             outputs: [
                 "9": .init(
                     images: [OutputFileRef(filename: "out.png", subfolder: "", type: "output")],
@@ -165,7 +165,7 @@ struct OutputFetchTransientRetryTests {
 
         let dto = JobDetailResponse(
             id: "job-100",
-            status: "completed",
+            status: .completed,
             outputs: [
                 "9": .init(
                     images: [OutputFileRef(filename: "out.png", subfolder: "", type: "output")],
@@ -260,7 +260,7 @@ struct OutputFetchTransientRetryTests {
         )
         let dto = JobDetailResponse(
             id: "job-empty",
-            status: "completed",
+            status: .completed,
             outputs: nil,
             executionError: nil,
             createTime: nil,

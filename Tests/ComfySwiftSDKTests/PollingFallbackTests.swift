@@ -10,7 +10,7 @@ struct PollingFallbackTests {
         let json = #"{"id": "abc-123", "status": "pending", "create_time": 1000, "update_time": 2000}"#
             .data(using: .utf8)!
         let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
-        #expect(dto.status == "pending")
+        #expect(dto.status == .pending)
         #expect(dto.outputs == nil)
     }
 
@@ -19,7 +19,7 @@ struct PollingFallbackTests {
         let json = #"{"id": "abc-123", "status": "in_progress", "create_time": 1000, "update_time": 2000}"#
             .data(using: .utf8)!
         let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
-        #expect(dto.status == "in_progress")
+        #expect(dto.status == .inProgress)
         #expect(dto.outputs == nil)
     }
 
@@ -41,7 +41,7 @@ struct PollingFallbackTests {
         }
         """.data(using: .utf8)!
         let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
-        #expect(dto.status == "completed")
+        #expect(dto.status == .completed)
         #expect(dto.outputs?["9"]?.images?.first?.filename == "out.png")
     }
 
@@ -63,7 +63,7 @@ struct PollingFallbackTests {
         }
         """.data(using: .utf8)!
         let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
-        #expect(dto.status == "failed")
+        #expect(dto.status == .failed)
         #expect(dto.executionError?.nodeType == "KSampler")
         #expect(dto.executionError?.exceptionMessage == "out of memory")
         #expect(dto.executionError?.exceptionType == "RuntimeError")
@@ -74,14 +74,30 @@ struct PollingFallbackTests {
         let json = #"{"id": "abc", "status": "in_progress", "some_future_field": {"foo": "bar"}, "create_time": 1, "update_time": 2}"#
             .data(using: .utf8)!
         let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
-        #expect(dto.status == "in_progress")
+        #expect(dto.status == .inProgress)
+    }
+
+    @Test("decodes an unrecognized status as .unknown (ignore-and-keep-polling behavior)")
+    func decodesUnrecognizedStatusAsUnknown() throws {
+        let json = #"{"id": "abc", "status": "queued_on_worker", "create_time": 1, "update_time": 2}"#
+            .data(using: .utf8)!
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == .unknown)
+    }
+
+    @Test("status decoding is case-insensitive (server-cased vocabulary still maps)")
+    func decodesStatusCaseInsensitively() throws {
+        let json = #"{"id": "abc", "status": "IN_PROGRESS", "create_time": 1, "update_time": 2}"#
+            .data(using: .utf8)!
+        let dto = try JSONDecoder().decode(JobDetailResponse.self, from: json)
+        #expect(dto.status == .inProgress)
     }
 
     @Test("derivePhase returns executing for in_progress status")
     func derivePhaseInProgress() {
         let dto = JobDetailResponse(
             id: "j1",
-            status: "in_progress",
+            status: .inProgress,
             outputs: nil,
             executionError: nil,
             createTime: nil,
@@ -94,7 +110,7 @@ struct PollingFallbackTests {
     func derivePhasePending() {
         let dto = JobDetailResponse(
             id: "j1",
-            status: "pending",
+            status: .pending,
             outputs: nil,
             executionError: nil,
             createTime: nil,
@@ -107,7 +123,7 @@ struct PollingFallbackTests {
     func derivePhaseCompleted() {
         let dto = JobDetailResponse(
             id: "j1",
-            status: "completed",
+            status: .completed,
             outputs: nil,
             executionError: nil,
             createTime: nil,
@@ -127,7 +143,7 @@ struct PollingFallbackTests {
         )
         let dto = JobDetailResponse(
             id: "j1",
-            status: "failed",
+            status: .failed,
             outputs: nil,
             executionError: execErr,
             createTime: nil,
@@ -140,7 +156,7 @@ struct PollingFallbackTests {
     func deriveFractionAlwaysZero() {
         let dto = JobDetailResponse(
             id: "j1",
-            status: "in_progress",
+            status: .inProgress,
             outputs: nil,
             executionError: nil,
             createTime: nil,

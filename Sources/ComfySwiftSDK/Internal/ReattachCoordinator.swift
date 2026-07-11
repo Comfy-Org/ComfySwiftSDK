@@ -76,8 +76,8 @@ internal actor ReattachCoordinator {
             return
         }
 
-        switch dto.status.lowercased() {
-        case "completed":
+        switch dto.status {
+        case .completed:
             do {
                 let output = try await PollingFallback.buildOutput(
                     from: dto,
@@ -94,18 +94,18 @@ internal actor ReattachCoordinator {
             continuation.finish()
             return
 
-        case "failed":
+        case .failed:
             let phase = PollingFallback.derivePhase(from: dto)
             continuation.yield(.failed(.jobFailed(phase: phase)))
             continuation.finish()
             return
 
-        case "cancelled":
+        case .cancelled:
             continuation.yield(.cancelled)
             continuation.finish()
             return
 
-        default:
+        case .pending, .inProgress, .unknown:
             break
         }
 
@@ -114,13 +114,13 @@ internal actor ReattachCoordinator {
         var hasEmittedQueued = false
         let didEmitFinalizing = hasEmittedFinalizing
 
-        switch dto.status.lowercased() {
-        case "pending":
+        switch dto.status {
+        case .pending:
             continuation.yield(.queued)
             hasEmittedQueued = true
             lastEmittedPhase = "queued"
 
-        case "in_progress":
+        case .inProgress:
             if hasEmittedFinalizing {
                 continuation.yield(.finalizing)
                 hasEmittedQueued = true
@@ -134,7 +134,7 @@ internal actor ReattachCoordinator {
                 lastEmittedFraction = fraction
             }
 
-        default:
+        case .completed, .failed, .cancelled, .unknown:
             continuation.yield(.queued)
             hasEmittedQueued = true
         }
