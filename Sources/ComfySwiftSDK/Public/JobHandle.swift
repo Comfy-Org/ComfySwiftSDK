@@ -6,10 +6,7 @@ public struct JobHandle: Sendable, Hashable {
     /// The opaque Comfy Cloud job id, read only by the SDK's transport layer.
     public let id: String
 
-    internal let reconnectToken: String?
-
-    internal init(id: String, reconnectToken: String? = nil) {
+    internal init(id: String) {
         self.id = id
-        self.reconnectToken = reconnectToken
     }
 }

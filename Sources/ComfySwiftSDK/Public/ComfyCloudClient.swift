@@ -138,7 +138,7 @@ public final class ComfyCloudClient: Sendable {
         promptId: String,
         hasEmittedFinalizing: Bool = false
     ) -> AsyncThrowingStream<JobEvent, Error> {
-        let handle = JobHandle(id: promptId, reconnectToken: nil)
+        let handle = JobHandle(id: promptId)
         return reattachCoordinator.reattach(
             to: handle,
             hasEmittedFinalizing: hasEmittedFinalizing
