@@ -13,13 +13,11 @@ internal enum OAuthTokenEndpoint {
         let accessToken: String
         let refreshToken: String
         let expiresIn: Int
-        let tokenType: String?   // present on exchange, absent on refresh — optional
 
         enum CodingKeys: String, CodingKey {
             case accessToken  = "access_token"
             case refreshToken = "refresh_token"
             case expiresIn    = "expires_in"
-            case tokenType    = "token_type"
         }
     }
 
@@ -32,13 +30,10 @@ internal enum OAuthTokenEndpoint {
         session: URLSession,
         mapAuthInvalidToExpired: Bool
     ) async throws -> OAuthTokenResponse {
-        var body = URLComponents()
-        body.queryItems = queryItems
-
         var request = URLRequest(url: OAuthConfiguration.tokenEndpoint)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        guard let bodyString = body.query, let bodyData = bodyString.data(using: .utf8) else {
+        guard let bodyData = formURLEncoded(queryItems).data(using: .utf8) else {
             throw ComfyError.unknown(underlying: URLError(.badURL))
         }
         request.httpBody = bodyData
@@ -69,5 +64,23 @@ internal enum OAuthTokenEndpoint {
             refreshToken: dto.refreshToken,
             expiresIn: dto.expiresIn
         )
+    }
+
+    /// Serializes query items as an `application/x-www-form-urlencoded` body.
+    /// Unlike `URLComponents.query` (which encodes with `.urlQueryAllowed` and
+    /// leaves `+`, `&`, and `=` unescaped), this percent-encodes every character
+    /// outside the RFC 3986 unreserved set, so an opaque token value — e.g. a
+    /// standard-base64 `code`/`refresh_token` containing `+` — survives the
+    /// round-trip instead of being decoded server-side as a space or corrupting
+    /// adjacent form fields.
+    private static func formURLEncoded(_ items: [URLQueryItem]) -> String {
+        var unreserved = CharacterSet.alphanumerics
+        unreserved.insert(charactersIn: "-._~")
+        func encode(_ value: String) -> String {
+            value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
+        }
+        return items
+            .map { "\(encode($0.name))=\(encode($0.value ?? ""))" }
+            .joined(separator: "&")
     }
 }

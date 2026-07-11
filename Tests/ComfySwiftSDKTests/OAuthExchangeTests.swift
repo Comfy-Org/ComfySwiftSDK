@@ -181,6 +181,32 @@ struct OAuthExchangeTests {
         #expect(fields["resource"] == "https://cloud.comfy.org/api")
     }
 
+    @Test("token body percent-encodes reserved chars per x-www-form-urlencoded (a raw '+' would decode as space)")
+    func tokenBodyPercentEncodesReservedChars() async throws {
+        let box = CapturedRequestBox()
+        installTokenEndpoint(
+            status: 200,
+            body: #"{"access_token":"at","refresh_token":"rt","expires_in":900}"#,
+            capture: box
+        )
+        defer { TestURLProtocol.uninstall() }
+
+        // Opaque token carrying every x-www-form-urlencoded delimiter: '+' (standard
+        // base64, decoded server-side as a space unless escaped), '/', '=', and '&'
+        // (would otherwise split into an injected form field).
+        let trickyToken = "ab+cd/ef=gh&ij"
+        let executor = OAuthTokenRefreshExecutor(session: TestURLProtocol.makeStubSession())
+        _ = try await executor.refresh(using: trickyToken, clientId: "acme-app")
+
+        let raw = String(data: box.body, encoding: .utf8) ?? ""
+        #expect(raw.contains("refresh_token=ab%2Bcd%2Fef%3Dgh%26ij"))
+        #expect(!raw.contains("ab+cd"))
+
+        // …and it round-trips back to the exact original value.
+        #expect(formFields(box.body)["refresh_token"] == trickyToken)
+        #expect(formFields(box.body)["client_id"] == "acme-app")
+    }
+
     @Test("refresh grant defaults to the comfy-ios client_id when unthreaded")
     func refreshDefaultsToComfyIOSClientId() async throws {
         let box = CapturedRequestBox()
