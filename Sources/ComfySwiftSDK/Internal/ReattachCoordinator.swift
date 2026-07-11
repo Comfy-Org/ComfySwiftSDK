@@ -135,6 +135,12 @@ internal actor ReattachCoordinator {
             }
 
         case .completed, .failed, .cancelled, .unknown:
+            // The terminal statuses already returned in the switch above
+            // (lines 79-110), so in practice only `.unknown` reaches here.
+            // They stay listed explicitly to keep the switch exhaustive over
+            // `JobStatus`, so adding a new case is a compile error rather than a
+            // silent fall-through. Treat the state as queued and let polling
+            // resolve the real lifecycle.
             continuation.yield(.queued)
             hasEmittedQueued = true
         }
