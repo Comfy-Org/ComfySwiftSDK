@@ -117,15 +117,8 @@ internal actor WebSocketSession {
             queryItems.append(URLQueryItem(name: "token", value: key))
         case .oauth(let tokenProvider),
              .oauthRefreshable(let tokenProvider, _, _, _):
-            do {
-                let token = try await tokenProvider()
-                guard !token.isEmpty else { throw ComfyError.authInvalid }
-                queryItems.append(URLQueryItem(name: "token", value: token))
-            } catch let e as ComfyError {
-                throw e
-            } catch {
-                throw ComfyError.authInvalid
-            }
+            let token = try await normalizeToken { try await tokenProvider() }
+            queryItems.append(URLQueryItem(name: "token", value: token))
         }
         components?.queryItems = queryItems
         guard let wsURL = components?.url else {

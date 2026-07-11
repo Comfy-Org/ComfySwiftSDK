@@ -82,37 +82,21 @@ internal actor Transport {
             request.setValue(key, forHTTPHeaderField: "X-API-Key")
             return nil
         case .oauth(let tokenProvider):
-            do {
-                let token = try await tokenProvider()
-                guard !token.isEmpty else { throw ComfyError.authInvalid }
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                return token
-            } catch let e as ComfyError {
-                throw e
-            } catch {
-                throw ComfyError.authInvalid
-            }
+            let token = try await normalizeToken { try await tokenProvider() }
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            return token
         case .oauthRefreshable(let tokenProvider, let refreshProvider, let tokenStore, let expiryProvider):
-            do {
+            let token = try await normalizeToken {
                 let freshToken = try await refreshIfNearExpiry(
                     refreshProvider: refreshProvider,
                     tokenStore: tokenStore,
                     expiryProvider: expiryProvider
                 )
-                let token: String
-                if let freshToken {
-                    token = freshToken
-                } else {
-                    token = try await tokenProvider()
-                }
-                guard !token.isEmpty else { throw ComfyError.authInvalid }
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                return token
-            } catch let e as ComfyError {
-                throw e
-            } catch {
-                throw ComfyError.authInvalid
+                if let freshToken { return freshToken }
+                return try await tokenProvider()
             }
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            return token
         }
     }
 
