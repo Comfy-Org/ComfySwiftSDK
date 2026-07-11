@@ -408,4 +408,51 @@ internal actor PollingFallback {
             body: body
         )
     }
+
+    /// Builds a `PollingFallback` and drains its event stream into `continuation`,
+    /// applying the shared terminal-event contract: yield every event, `finish()`
+    /// once on the first `.complete` / `.failed` / `.cancelled`, `finish()` on
+    /// natural stream end, and wrap any thrown error as `.failed(.unknown(...))`
+    /// before finishing. Both the WebSocket-drop handoff and the reattach path
+    /// forward here, so which `JobEvent` cases are terminal (and the finish-once
+    /// discipline) lives in exactly one place instead of being duplicated.
+    static func drain(
+        into continuation: AsyncThrowingStream<JobEvent, Error>.Continuation,
+        transport: Transport,
+        jobId: String,
+        startTime: Date,
+        clock: any Clock<Duration>,
+        lastEmittedPhase: String?,
+        lastEmittedFraction: Double,
+        hasEmittedQueued: Bool,
+        hasEmittedFinalizing: Bool
+    ) async {
+        let polling = PollingFallback(
+            transport: transport,
+            jobId: jobId,
+            startTime: startTime,
+            clock: clock
+        )
+        do {
+            for try await event in polling.eventStream(
+                lastEmittedPhase: lastEmittedPhase,
+                lastEmittedFraction: lastEmittedFraction,
+                hasEmittedQueued: hasEmittedQueued,
+                hasEmittedFinalizing: hasEmittedFinalizing
+            ) {
+                continuation.yield(event)
+                switch event {
+                case .complete, .failed, .cancelled:
+                    continuation.finish()
+                    return
+                default:
+                    continue
+                }
+            }
+            continuation.finish()
+        } catch {
+            continuation.yield(.failed(.unknown(underlying: error)))
+            continuation.finish()
+        }
+    }
 }

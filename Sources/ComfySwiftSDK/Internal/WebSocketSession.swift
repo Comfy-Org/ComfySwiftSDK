@@ -316,61 +316,21 @@ internal actor WebSocketSession {
             if PollingFallback.isTransient(translated) {
                 SDKLog.wsReadLoopError(error: translated, jobId: jobId, handingOffToPolling: true)
                 let lastPhase = didEmitQueued ? PhaseLabel.forNode(lastNodeName) : nil
-                await Self.handOffToPolling(
+                await PollingFallback.drain(
+                    into: continuation,
                     transport: transport,
                     jobId: jobId,
                     startTime: startTime,
+                    clock: clock,
                     lastEmittedPhase: lastPhase,
                     lastEmittedFraction: lastFraction,
                     hasEmittedQueued: didEmitQueued,
-                    hasEmittedFinalizing: didEmitFinalizing,
-                    clock: clock,
-                    continuation: continuation
+                    hasEmittedFinalizing: didEmitFinalizing
                 )
                 return
             }
             SDKLog.wsReadLoopError(error: translated, jobId: jobId, handingOffToPolling: false)
             continuation.yield(.failed(translated))
-            continuation.finish()
-        }
-    }
-
-    private static func handOffToPolling(
-        transport: Transport,
-        jobId: String,
-        startTime: Date,
-        lastEmittedPhase: String?,
-        lastEmittedFraction: Double,
-        hasEmittedQueued: Bool,
-        hasEmittedFinalizing: Bool,
-        clock: any Clock<Duration>,
-        continuation: AsyncThrowingStream<JobEvent, Error>.Continuation
-    ) async {
-        let polling = PollingFallback(
-            transport: transport,
-            jobId: jobId,
-            startTime: startTime,
-            clock: clock
-        )
-        do {
-            for try await event in polling.eventStream(
-                lastEmittedPhase: lastEmittedPhase,
-                lastEmittedFraction: lastEmittedFraction,
-                hasEmittedQueued: hasEmittedQueued,
-                hasEmittedFinalizing: hasEmittedFinalizing
-            ) {
-                continuation.yield(event)
-                switch event {
-                case .complete, .failed, .cancelled:
-                    continuation.finish()
-                    return
-                default:
-                    continue
-                }
-            }
-            continuation.finish()
-        } catch {
-            continuation.yield(.failed(.unknown(underlying: error)))
             continuation.finish()
         }
     }
