@@ -320,10 +320,14 @@ internal actor WebSocketSession {
 
     /// Reifies a decode-to-`Any` frame body into a typed `Decodable` value by
     /// round-tripping it through `JSONSerialization` and `JSONDecoder`. Returns
-    /// `nil` when the body is absent or any step of the round-trip fails,
-    /// preserving the `try?`-fallback behavior the frame handlers rely on.
+    /// `nil` when the body is absent, is a JSON scalar rather than an object or
+    /// array (guarded via `isValidJSONObject` to avoid the uncatchable
+    /// `NSInvalidArgumentException` that `data(withJSONObject:)` raises for
+    /// top-level scalars), or any step of the round-trip fails — preserving the
+    /// `try?`-fallback behavior the frame handlers rely on.
     private static func reifyFrame<T: Decodable>(_ raw: AnyDecodable?) -> T? {
         guard let value = raw?.value,
+              JSONSerialization.isValidJSONObject(value),
               let frameJSON = try? JSONSerialization.data(withJSONObject: value),
               let decoded = try? JSONDecoder().decode(T.self, from: frameJSON) else {
             return nil
