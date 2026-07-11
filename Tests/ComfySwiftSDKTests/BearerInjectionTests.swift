@@ -233,4 +233,63 @@ struct BearerInjectionTests {
         // The mapping happens before any authenticated request is issued.
         #expect(capture.requests.isEmpty)
     }
+
+    // BE-2862 cancellation contract: normalizeToken must NOT collapse cooperative
+    // cancellation into .authInvalid. Swallowing it would (a) misreport a cancelled auth
+    // fetch as a rejected credential and (b) — on .oauthRefreshable — make withAuthRetry
+    // trigger a spurious refresh/retry. These two tests pin both halves.
+
+    @Test(".oauth HTTP header path surfaces provider CancellationError as .cancelled")
+    func oauth_http_header_cancellation_surfaces_cancelled() async throws {
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let transport = makeTransport(
+            credential: .oauth(tokenProvider: { throw CancellationError() })
+        )
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .cancelled, got success")
+        } catch ComfyError.cancelled {
+        } catch {
+            Issue.record("Expected .cancelled, got \(error)")
+        }
+        // Cancellation is surfaced before any request leaves the client.
+        #expect(capture.requests.isEmpty)
+    }
+
+    // A cancelled token fetch on .oauthRefreshable must propagate as .cancelled WITHOUT
+    // withAuthRetry invoking the refreshProvider — that would be spurious refresh work on a
+    // cancelled task. refreshProvider records whether it ran and would flip the result to
+    // .authExpired (its authInvalid throw, escalated by a second retry) if cancellation were
+    // wrongly mapped to .authInvalid.
+    @Test("oauthRefreshable HTTP path propagates cancellation without spurious refresh")
+    func oauthRefreshable_http_cancellation_no_refresh() async throws {
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _hit = false
+            func set() { lock.lock(); _hit = true; lock.unlock() }
+            var hit: Bool { lock.lock(); defer { lock.unlock() }; return _hit }
+        }
+        let refreshed = Flag()
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let credential = ComfyCredential.oauthRefreshable(
+            tokenProvider: { throw CancellationError() },
+            refreshProvider: { refreshed.set(); throw ComfyError.authInvalid },
+            tokenStore: { _ in },
+            expiryProvider: { Date.distantFuture }
+        )
+        let transport = makeTransport(credential: credential)
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .cancelled, got success")
+        } catch ComfyError.cancelled {
+        } catch {
+            Issue.record("Expected .cancelled, got \(error)")
+        }
+        #expect(refreshed.hit == false)
+        #expect(capture.requests.isEmpty)
+    }
 }
