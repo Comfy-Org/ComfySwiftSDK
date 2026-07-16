@@ -145,33 +145,16 @@ internal actor ReattachCoordinator {
             hasEmittedQueued = true
         }
 
-        let polling = PollingFallback(
+        await PollingFallback.drain(
+            into: continuation,
             transport: transport,
             jobId: handle.id,
             startTime: startTime,
-            clock: clock
+            clock: clock,
+            lastEmittedPhase: lastEmittedPhase,
+            lastEmittedFraction: lastEmittedFraction,
+            hasEmittedQueued: hasEmittedQueued,
+            hasEmittedFinalizing: didEmitFinalizing
         )
-
-        do {
-            for try await event in polling.eventStream(
-                lastEmittedPhase: lastEmittedPhase,
-                lastEmittedFraction: lastEmittedFraction,
-                hasEmittedQueued: hasEmittedQueued,
-                hasEmittedFinalizing: didEmitFinalizing
-            ) {
-                continuation.yield(event)
-                switch event {
-                case .complete, .failed, .cancelled:
-                    continuation.finish()
-                    return
-                default:
-                    continue
-                }
-            }
-            continuation.finish()
-        } catch {
-            continuation.yield(.failed(.unknown(underlying: error)))
-            continuation.finish()
-        }
     }
 }
