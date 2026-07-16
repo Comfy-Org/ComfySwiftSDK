@@ -60,10 +60,31 @@ struct JobDetailExecutionError: Decodable {
     }
 }
 
+/// The job-lifecycle vocabulary as it arrives on the wire
+/// (`pending` / `in_progress` / `completed` / `failed` / `cancelled`).
+///
+/// Decoding lowercases the raw value and maps any unrecognized status to
+/// `.unknown`, preserving the "ignore statuses we don't understand" behavior
+/// that the call sites previously got from a `default:` branch — while giving
+/// the exhaustive switches a single source of truth for the case set.
+enum JobStatus: String, Decodable {
+    case pending
+    case inProgress = "in_progress"
+    case completed
+    case failed
+    case cancelled
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = JobStatus(rawValue: raw.lowercased()) ?? .unknown
+    }
+}
+
 struct JobDetailResponse: Decodable {
     let id: String?
 
-    let status: String
+    let status: JobStatus
 
     let outputs: [String: NodeOutputPayload]?
 

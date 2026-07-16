@@ -108,15 +108,15 @@ internal actor PollingFallback {
                 return
             }
 
-            switch dto.status.lowercased() {
-            case "pending":
+            switch dto.status {
+            case .pending:
                 if !didEmitQueued {
                     continuation.yield(.queued)
                     didEmitQueued = true
                     lastPhase = "queued"
                 }
 
-            case "in_progress":
+            case .inProgress:
                 successWithoutOutputsRetries = 0
                 if !didEmitQueued {
                     continuation.yield(.queued)
@@ -130,7 +130,7 @@ internal actor PollingFallback {
                     lastFraction = fraction
                 }
 
-            case "completed":
+            case .completed:
                 if !didEmitFinalizing {
                     continuation.yield(.finalizing)
                     didEmitFinalizing = true
@@ -175,18 +175,18 @@ internal actor PollingFallback {
                     return
                 }
 
-            case "failed":
+            case .failed:
                 let phase = derivePhase(from: dto)
                 continuation.yield(.failed(.jobFailed(phase: phase)))
                 continuation.finish()
                 return
 
-            case "cancelled":
+            case .cancelled:
                 continuation.yield(.cancelled)
                 continuation.finish()
                 return
 
-            default:
+            case .unknown:
                 break
             }
 
@@ -239,17 +239,17 @@ internal actor PollingFallback {
     }
 
     static func derivePhase(from dto: JobDetailResponse) -> String {
-        switch dto.status.lowercased() {
-        case "pending":
+        switch dto.status {
+        case .pending:
             return "queued"
-        case "completed":
+        case .completed:
             return "saving"
-        case "failed":
+        case .failed:
             if let nodeType = dto.executionError?.nodeType, !nodeType.isEmpty {
                 return PhaseLabel.forNode(nodeType)
             }
             return "executing"
-        default:
+        case .inProgress, .cancelled, .unknown:
             return "executing"
         }
     }
