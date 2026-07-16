@@ -159,4 +159,137 @@ struct BearerInjectionTests {
             Issue.record("Expected .authInvalid, got \(error)")
         }
     }
+
+    // BE-2862 characterization: pin the shared normalizeToken(_:) contract on the two
+    // HTTP header branches not directly asserted elsewhere. Behavior-preserving refactor.
+
+    @Test(".oauth HTTP header path maps a throwing tokenProvider to .authInvalid")
+    func oauth_http_header_throwing_provider_throws_authInvalid() async throws {
+        struct ProviderFailure: Error {}
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let transport = makeTransport(
+            credential: .oauth(tokenProvider: { throw ProviderFailure() })
+        )
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .authInvalid, got success")
+        } catch ComfyError.authInvalid {
+        } catch {
+            Issue.record("Expected .authInvalid, got \(error)")
+        }
+        // Non-ComfyError from the provider is mapped before any request leaves.
+        #expect(capture.requests.isEmpty)
+    }
+
+    @Test(".oauth HTTP header path maps an empty token to .authInvalid")
+    func oauth_http_header_empty_token_throws_authInvalid() async throws {
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let transport = makeTransport(
+            credential: .oauth(tokenProvider: { "" })
+        )
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .authInvalid, got success")
+        } catch ComfyError.authInvalid {
+        } catch {
+            Issue.record("Expected .authInvalid, got \(error)")
+        }
+        #expect(capture.requests.isEmpty)
+    }
+
+    // Pins Step 3's invariant: refreshIfNearExpiry(...) stays INSIDE the normalizeToken
+    // closure, so its non-ComfyError throws map to .authInvalid. Here expiryProvider throws
+    // a non-ComfyError, which applyAuth's normalizeToken maps to .authInvalid. Because the
+    // credential is .oauthRefreshable, withAuthRetry then retries via performRefresh; the
+    // refreshProvider deliberately throws ComfyError.authInvalid so that retry re-surfaces
+    // .authInvalid unchanged (rather than a decode/network error muddying the assertion).
+    // If refreshIfNearExpiry were hoisted OUT of the closure, expiryProvider's ProviderFailure
+    // would escape unmapped and this catch would see ProviderFailure instead — the regression
+    // this test exists to catch.
+    @Test("oauthRefreshable HTTP path maps a non-ComfyError from refreshIfNearExpiry to .authInvalid")
+    func oauthRefreshable_http_refresh_nonComfyError_throws_authInvalid() async throws {
+        struct ProviderFailure: Error {}
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let credential = ComfyCredential.oauthRefreshable(
+            tokenProvider: { "unused-access-token" },
+            refreshProvider: { throw ComfyError.authInvalid },
+            tokenStore: { _ in },
+            expiryProvider: { throw ProviderFailure() }
+        )
+        let transport = makeTransport(credential: credential)
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .authInvalid, got success")
+        } catch ComfyError.authInvalid {
+        } catch {
+            Issue.record("Expected .authInvalid, got \(error)")
+        }
+        // The mapping happens before any authenticated request is issued.
+        #expect(capture.requests.isEmpty)
+    }
+
+    // BE-2862 cancellation contract: normalizeToken must NOT collapse cooperative
+    // cancellation into .authInvalid. Swallowing it would (a) misreport a cancelled auth
+    // fetch as a rejected credential and (b) — on .oauthRefreshable — make withAuthRetry
+    // trigger a spurious refresh/retry. These two tests pin both halves.
+
+    @Test(".oauth HTTP header path surfaces provider CancellationError as .cancelled")
+    func oauth_http_header_cancellation_surfaces_cancelled() async throws {
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let transport = makeTransport(
+            credential: .oauth(tokenProvider: { throw CancellationError() })
+        )
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .cancelled, got success")
+        } catch ComfyError.cancelled {
+        } catch {
+            Issue.record("Expected .cancelled, got \(error)")
+        }
+        // Cancellation is surfaced before any request leaves the client.
+        #expect(capture.requests.isEmpty)
+    }
+
+    // A cancelled token fetch on .oauthRefreshable must propagate as .cancelled WITHOUT
+    // withAuthRetry invoking the refreshProvider — that would be spurious refresh work on a
+    // cancelled task. refreshProvider records whether it ran and would flip the result to
+    // .authExpired (its authInvalid throw, escalated by a second retry) if cancellation were
+    // wrongly mapped to .authInvalid.
+    @Test("oauthRefreshable HTTP path propagates cancellation without spurious refresh")
+    func oauthRefreshable_http_cancellation_no_refresh() async throws {
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _hit = false
+            func set() { lock.lock(); _hit = true; lock.unlock() }
+            var hit: Bool { lock.lock(); defer { lock.unlock() }; return _hit }
+        }
+        let refreshed = Flag()
+        let capture = installCapture()
+        defer { TestURLProtocol.uninstall() }
+
+        let credential = ComfyCredential.oauthRefreshable(
+            tokenProvider: { throw CancellationError() },
+            refreshProvider: { refreshed.set(); throw ComfyError.authInvalid },
+            tokenStore: { _ in },
+            expiryProvider: { Date.distantFuture }
+        )
+        let transport = makeTransport(credential: credential)
+        do {
+            try await transport.validateAuth()
+            Issue.record("Expected .cancelled, got success")
+        } catch ComfyError.cancelled {
+        } catch {
+            Issue.record("Expected .cancelled, got \(error)")
+        }
+        #expect(refreshed.hit == false)
+        #expect(capture.requests.isEmpty)
+    }
 }
