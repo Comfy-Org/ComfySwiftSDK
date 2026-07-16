@@ -325,7 +325,7 @@ internal actor WebSocketSession {
     /// `NSInvalidArgumentException` that `data(withJSONObject:)` raises for
     /// top-level scalars), or any step of the round-trip fails — preserving the
     /// `try?`-fallback behavior the frame handlers rely on.
-    private static func reifyFrame<T: Decodable>(_ raw: AnyDecodable?) -> T? {
+    internal static func reifyFrame<T: Decodable>(_ raw: AnyDecodable?) -> T? {
         guard let value = raw?.value,
               JSONSerialization.isValidJSONObject(value),
               let frameJSON = try? JSONSerialization.data(withJSONObject: value),
