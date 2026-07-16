@@ -274,7 +274,7 @@ internal actor Transport {
             if let serverError = dto.error, !serverError.isEmpty {
                 throw ComfyError.unknown(underlying: SubmitErrorBody(message: serverError))
             }
-            return JobHandle(id: dto.promptId, reconnectToken: nil)
+            return JobHandle(id: dto.promptId)
         } catch let comfyError as ComfyError {
             throw comfyError
         } catch {
