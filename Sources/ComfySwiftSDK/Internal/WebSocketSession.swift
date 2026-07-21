@@ -219,12 +219,7 @@ internal actor WebSocketSession {
                         }
                     }
                 case "executed":
-                    if let rawDict = envelope.data?.value,
-                       let frameJSON = try? JSONSerialization.data(withJSONObject: rawDict),
-                       let executed = try? JSONDecoder().decode(
-                        ExecutedFrameData.self,
-                        from: frameJSON
-                       ) {
+                    if let executed: ExecutedFrameData = reifyFrame(envelope.data) {
                         if let images = executed.output?.images {
                             bufferedImageRefs.append(contentsOf: images)
                         }
@@ -269,12 +264,7 @@ internal actor WebSocketSession {
                         exceptionMessage: nil,
                         nodeType: nil
                     )
-                    if let rawDict = envelope.data?.value,
-                       let frameJSON = try? JSONSerialization.data(withJSONObject: rawDict),
-                       let decoded = try? JSONDecoder().decode(
-                        ExecutionErrorFrameData.self,
-                        from: frameJSON
-                       ) {
+                    if let decoded: ExecutionErrorFrameData = reifyFrame(envelope.data) {
                         execError = JobExecutionError(
                             exceptionType: decoded.exceptionType,
                             exceptionMessage: decoded.exceptionMessage,
@@ -326,6 +316,23 @@ internal actor WebSocketSession {
             continuation.yield(.failed(translated))
             continuation.finish()
         }
+    }
+
+    /// Reifies a decode-to-`Any` frame body into a typed `Decodable` value by
+    /// round-tripping it through `JSONSerialization` and `JSONDecoder`. Returns
+    /// `nil` when the body is absent, is a JSON scalar rather than an object or
+    /// array (guarded via `isValidJSONObject` to avoid the uncatchable
+    /// `NSInvalidArgumentException` that `data(withJSONObject:)` raises for
+    /// top-level scalars), or any step of the round-trip fails — preserving the
+    /// `try?`-fallback behavior the frame handlers rely on.
+    internal static func reifyFrame<T: Decodable>(_ raw: AnyDecodable?) -> T? {
+        guard let value = raw?.value,
+              JSONSerialization.isValidJSONObject(value),
+              let frameJSON = try? JSONSerialization.data(withJSONObject: value),
+              let decoded = try? JSONDecoder().decode(T.self, from: frameJSON) else {
+            return nil
+        }
+        return decoded
     }
 }
 
