@@ -27,10 +27,10 @@ jobs:
     # workflow auto-opens a SHA-bump PR here when cursor-review.yml changes
     # upstream; keep workflows_ref matching so prompts/scripts load from the
     # same commit.
-    uses: Comfy-Org/github-workflows/.github/workflows/cursor-review.yml@3ea5dce61888a6df71b3a7b1f6bded345b2501e2 # github-workflows main (dc65b8b)
+    uses: Comfy-Org/github-workflows/.github/workflows/cursor-review.yml@964d5aad37cbfb57c5b23961d42c2fd85868bf1d # github-workflows main (dc65b8b)
     with:
       # Keep the assets ref in lock-step with the `uses:` ref above.
-      workflows_ref: 3ea5dce61888a6df71b3a7b1f6bded345b2501e2
+      workflows_ref: 964d5aad37cbfb57c5b23961d42c2fd85868bf1d
       # Swift package: drop SPM build/cache dirs from the size budget + the diff
       # fed to Cursor. (They're gitignored, so this is belt-and-suspenders.)
       diff_excludes: >-
